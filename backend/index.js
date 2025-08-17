@@ -3,9 +3,10 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// React build を配信
+// React build 配信
 app.use(express.static(path.join(__dirname, '../frontend/build')));
 
+// 簡易API
 app.get('/check', (req, res) => {
   res.json({ result: "当選です！🎉" });
 });
