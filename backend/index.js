@@ -1,21 +1,20 @@
-const express = require('express');
-const path = require('path');
+const express = require("express");
+const cors = require("cors");
+require("dotenv").config();
+
 const app = express();
+
+// ミドルウェア設定
+app.use(cors());
+app.use(express.json());
+
+// ルート分割（routes/ フォルダを利用）
+app.use("/api/prizes", require("./routes/prizes"));
+app.use("/api/entries", require("./routes/entries"));
+app.use("/api/lottery", require("./routes/lottery"));
+
+// サーバー起動
 const PORT = process.env.PORT || 3001;
-
-// React build 配信
-app.use(express.static(path.join(__dirname, '../frontend/build')));
-
-// 簡易API
-app.get('/check', (req, res) => {
-  res.json({ result: "当選です！🎉" });
-});
-
-// SPA ルーティング対応
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
-});
-
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
 });
