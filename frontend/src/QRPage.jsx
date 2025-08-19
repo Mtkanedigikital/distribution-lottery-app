@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/QRPage.jsx
-// Version: v0.2
+// Version: v0.2_001
 // Last Updated: 2025-08-20
 // 仕様の説明: ?prizeId を受け取り、/api/prizes から対象を検索。publish_time_utc で公開判定し、非公開時はカウントダウン、公開後は /api/lottery/check を呼び結果表示。
 // 機能: 入力欄(抽選番号/パス)と結果表示
