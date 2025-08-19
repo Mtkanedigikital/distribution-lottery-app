@@ -1,20 +1,47 @@
+// ============================================================================
+// File: frontend/src/QRPage.jsx
+// Version: v0.2
+// Last Updated: 2025-08-20
+// 仕様の説明: ?prizeId を受け取り、/api/prizes から対象を検索。publish_time_utc で公開判定し、非公開時はカウントダウン、公開後は /api/lottery/check を呼び結果表示。
+// 機能: 入力欄(抽選番号/パス)と結果表示
+// UI: 軽いスタイル、最大幅520px
+// API: /api/prizes, /api/lottery/check
+// 注意: publish_time_utc が無い場合は公開扱い
+// 履歴の説明(直近): ヘッダ整備、useSearchParams 方式、公開ガード/カウントダウン統一、fetch化とエラー整理。
+// ============================================================================
+
 import React, { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
-import axios from "axios";
+import { useSearchParams } from "react-router-dom";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
 
 // 秒を「HH:MM:SS」へ
 function fmtHMS(sec) {
-  const s = Math.max(0, Math.floor(sec));
+  const s = Math.max(0, Math.floor(sec ?? 0));
   const h = Math.floor(s / 3600).toString().padStart(2, "0");
   const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
   const ss = Math.floor(s % 60).toString().padStart(2, "0");
   return `${h}:${m}:${ss}`;
 }
 
+// "2025-08-19 13:00" → "公開日: 2025/08/19 13:00"
+function formatJstDate(str) {
+  try {
+    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    const [datePart, timePartRaw] = str.trim().split(/\s+/);
+    const [y, m, d] = (datePart || "").split("-");
+    const timePart = (timePartRaw || "").slice(0, 5);
+    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
+    return `公開日: ${y}/${m}/${d} ${timePart}`;
+  } catch {
+    return `公開日: ${str}`;
+  }
+}
+
 export default function QRPage() {
-  const { prizeId } = useParams();
+  const [searchParams] = useSearchParams();
+  const prizeId = searchParams.get("prizeId") || "";
+
   const [loading, setLoading] = useState(true);
   const [prize, setPrize] = useState(null);
   const [error, setError] = useState("");
@@ -24,65 +51,90 @@ export default function QRPage() {
   const [password, setPassword] = useState("");
   const [resultMsg, setResultMsg] = useState("");
 
-  // カウントダウン
+  // 公開時刻（UTC）→ Date
   const publishAt = useMemo(() => {
-    if (!prize?.publishTimeParsedUTC) return null;
-    const d = new Date(prize.publishTimeParsedUTC);
+    if (!prize?.publish_time_utc) return null;
+    const d = new Date(prize.publish_time_utc);
     return isNaN(d) ? null : d;
   }, [prize]);
 
+  // カウントダウン
   const [remainSec, setRemainSec] = useState(null);
-
   useEffect(() => {
     let timer;
     if (publishAt) {
       const tick = () => {
-        const now = new Date();
-        const diff = (publishAt.getTime() - now.getTime()) / 1000;
+        const now = Date.now();
+        const diff = (publishAt.getTime() - now) / 1000;
         setRemainSec(diff);
       };
       tick();
       timer = setInterval(tick, 1000);
+    } else {
+      setRemainSec(null);
     }
     return () => timer && clearInterval(timer);
   }, [publishAt]);
 
   const isPublished = useMemo(() => {
     if (!publishAt) return true; // 値がない場合は公開扱い
-    return new Date() >= publishAt;
+    return Date.now() >= publishAt.getTime();
   }, [publishAt]);
 
-  // 初期ロード：商品情報取得
+  // 初期ロード：賞品情報取得（/api/prizes から対象を抽出）
   useEffect(() => {
-    setLoading(true);
-    setError("");
-    setResultMsg("");
-
-    axios
-      .get(`${API_BASE}/api/product/${encodeURIComponent(prizeId)}`)
-      .then((res) => setPrize(res.data))
-      .catch(() => {
-        setError("商品が見つかりません。QRコードが正しいかご確認ください。");
-        setPrize(null);
-      })
-      .finally(() => setLoading(false));
+    let aborted = false;
+    (async () => {
+      if (!prizeId) {
+        setError("賞品IDが指定されていません。URLをご確認ください。");
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError("");
+      setResultMsg("");
+      try {
+        const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const list = await res.json();
+        const found = Array.isArray(list) ? list.find((x) => x.id === prizeId) : null;
+        if (!aborted) {
+          if (found) setPrize(found);
+          else {
+            setPrize(null);
+            setError("賞品が見つかりません。QRのIDが正しいかご確認ください。");
+          }
+        }
+      } catch (e) {
+        if (!aborted) {
+          setPrize(null);
+          setError("読み込みに失敗しました。時間を置いてお試しください。");
+        }
+      } finally {
+        if (!aborted) setLoading(false);
+      }
+    })();
+    return () => { aborted = true; };
   }, [prizeId]);
 
   // 結果確認
-  const onCheck = async () => {
+  const onCheck = async (e) => {
+    e?.preventDefault?.();
     setResultMsg("");
     if (!entryNumber || !password) {
-      setResultMsg("エントリー番号とパスワードを入力してください。");
+      setResultMsg("抽選番号とパスワードを入力してください。");
       return;
     }
     try {
-      const res = await axios.post(`${API_BASE}/api/check`, {
-        prizeId,
-        entryNumber,
-        password,
+      const res = await fetch(`${API_BASE}/api/lottery/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prizeId, entryNumber, password }),
       });
-      setResultMsg(res.data?.result ?? "結果を取得できませんでした。");
-    } catch (e) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setResultMsg(data?.result ?? "結果を取得できませんでした。");
+    } catch (_e) {
       setResultMsg("通信エラーが発生しました。時間を置いてお試しください。");
     }
   };
@@ -93,9 +145,9 @@ export default function QRPage() {
 
   return (
     <div style={{ padding: 16, maxWidth: 520, margin: "0 auto" }}>
-      <h2 style={{ marginBottom: 8 }}>{prize.prizeName} の抽選ページ</h2>
+      <h2 style={{ marginBottom: 8 }}>{prize.name} の抽選ページ</h2>
       <div style={{ marginBottom: 12, color: "#555" }}>
-        公開予定（JST）：{prize.resultTimeJST || "未設定"}
+        {formatJstDate(prize.result_time_jst || "")}
       </div>
 
       {!isPublished ? (
@@ -117,7 +169,8 @@ export default function QRPage() {
         </div>
       ) : (
         <>
-          <div
+          <form
+            onSubmit={onCheck}
             style={{
               padding: 16,
               border: "1px solid #e5e7eb",
@@ -127,25 +180,27 @@ export default function QRPage() {
             }}
           >
             <div style={{ marginBottom: 8 }}>
-              エントリー番号とパスワードを入力して結果を確認してください。
+              抽選番号とパスワードを入力して結果を確認してください。
             </div>
 
             <div style={{ display: "grid", gap: 8 }}>
               <input
-                placeholder="エントリー番号"
+                placeholder="抽選番号（例: 001）"
                 value={entryNumber}
                 onChange={(e) => setEntryNumber(e.target.value)}
                 style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+                required
               />
               <input
                 type="password"
-                placeholder="パスワード"
+                placeholder="パスワード（例: 1111）"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+                required
               />
               <button
-                onClick={onCheck}
+                type="submit"
                 style={{
                   padding: "10px 14px",
                   borderRadius: 8,
@@ -159,7 +214,7 @@ export default function QRPage() {
                 抽選結果を確認する
               </button>
             </div>
-          </div>
+          </form>
 
           {resultMsg && (
             <div

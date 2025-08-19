@@ -1,3 +1,17 @@
+// ============================================================================
+// File: frontend/src/AdminEdit.jsx
+// Version: v0.1
+//
+// 仕様:
+// - URL パラメータから prizeId を取得
+// - バックエンド /api/product/:prizeId にアクセスし賞品データを取得
+// - 賞品情報を表示（ID, 賞品名, 公開予定時刻）
+// - 「参加者ページを開く」ボタンで /participant?prizeId=... を新規タブで開く
+//
+// 履歴:
+// - 2025-08-19: 初版作成
+// ============================================================================
+
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import axios from "axios";
