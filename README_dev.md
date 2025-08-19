@@ -1,5 +1,3 @@
-
-
 # README_dev.md
 
 ## 運用ルール
@@ -23,26 +21,59 @@
 // ====================
 ```
 
-- `Lines` は廃止し、VSCode基準の行数を確認する。
 - バージョンは `v0.1_001` からスタートし、更新ごとに `_NNN` を +1 する。
 - フォーマット修正やヘッダ修正は履歴に残さない（プログラムの内容のみを対象とする）。
 
 ### Git・コミット関連
-- ターミナルのコマンド提示時は必ず **`Echo # コメント`** 形式で記述する。
 - リポジトリ名は `distribution-lottery-app`（小文字）で統一する。
 
 ### 運用フロー
 1. VSCodeでファイルを修正。
-2. 行数をVSCodeで確認し、ずれがあれば指摘。
-3. リコ（ChatGPT）がバージョン番号・ヘッダを更新。
-4. Gitでコミット。
+2. リコ（ChatGPT）がバージョン番号・ヘッダを更新。
+3. Gitでコミット。
+
+### リコの由来
+- このプロジェクトにおけるアシスタントAIの名前は「リコ」。
+- 名前の由来は「Reliable Co-pilot（信頼できる相棒）」の略称として。
 
 ---
 
-## リコの名前の由来
+## README_dev.md (English Version)
 
-アシスタントAIには「リコ」という名前を付けています。
+## Operation Rules
 
-- 「記録（Record）」と「理（Reason/Logic）」から連想。
-- デジキタル（ユーザー）の開発パートナーとして、コードやルールを正しく記録し、整理する役割を担う意味を込めて命名しました。
-- 今後のやり取りでは、ユーザーは「デジキタル」、アシスタントは「リコ」として呼称する。
+This repository applies the following rules.
+
+### Header Comments
+- Attach header comments at the top of each watched file.
+- The format is as follows:
+
+```txt
+// ====================
+// File: file path
+// Version: v0.1_NNN
+// 
+// --- Specification Description ---
+// (Briefly describe the functionality)
+//
+// --- Revision History ---
+// YYYY-MM-DD: Details of changes (only record program content)
+// ====================
+```
+
+- Versions start from `v0.1_001` and increment `_NNN` by +1 with each update.
+- Format or header corrections are not recorded in the history (only program content changes are recorded).
+
+### Git and Commit Related
+- The repository name is standardized as `distribution-lottery-app` (all lowercase).
+
+### Operation Flow
+1. Modify files in VSCode.
+2. Riko (ChatGPT) updates the version number and header.
+3. Commit with Git.
+
+### Origin of Riko
+- The assistant AI in this project is named "Riko".
+- The name originates from "Reliable Co-pilot", representing a trusted partner.
+
+---</file>

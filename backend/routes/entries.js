@@ -1,62 +1,66 @@
+// backend/routes/entries.js
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const adminAuth = require("../middleware/adminAuth");
 
-// 参加者エントリー一覧
-router.get("/", async (req, res) => {
+// 一覧（特定賞品）
+router.get("/:prizeId", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM entries ORDER BY id ASC");
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
+    const r = await pool.query(
+      "SELECT id,prize_id,entry_number,is_winner FROM entries WHERE prize_id = $1 ORDER BY entry_number ASC",
+      [req.params.prizeId]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error("GET /api/entries/:prizeId error:", e);
     res.status(500).json({ error: "Failed to fetch entries" });
   }
 });
 
-// 参加者エントリー作成
-router.post("/", async (req, res) => {
-  const { prize_id, entry_number, password, is_winner } = req.body;
+// 作成（重複時 409）
+router.post("/", adminAuth, async (req, res) => {
+  const { prize_id, entry_number, password, is_winner } = req.body || {};
+  if (!prize_id || !entry_number || typeof password !== "string") {
+    return res.status(400).json({ error: "prize_id, entry_number, password are required" });
+  }
   try {
-    const result = await pool.query(
+    const r = await pool.query(
       `INSERT INTO entries (prize_id, entry_number, password, is_winner)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
+       VALUES ($1,$2,$3,COALESCE($4,false))
+       RETURNING id,prize_id,entry_number,is_winner`,
       [prize_id, entry_number, password, is_winner]
     );
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
+    res.status(201).json(r.rows[0]);
+  } catch (e) {
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "Entry already exists for this prize_id and entry_number" });
+    }
+    console.error("POST /api/entries error:", e);
     res.status(500).json({ error: "Failed to create entry" });
   }
 });
 
-// 参加者エントリー更新
-router.put("/:id", async (req, res) => {
-  const { id } = req.params;
-  const { prize_id, entry_number, password, is_winner } = req.body;
-  try {
-    const result = await pool.query(
-      `UPDATE entries
-       SET prize_id=$1, entry_number=$2, password=$3, is_winner=$4
-       WHERE id=$5 RETURNING *`,
-      [prize_id, entry_number, password, is_winner, id]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to update entry" });
+// UPSERT（(prize_id, entry_number) 一意）
+router.put("/upsert", adminAuth, async (req, res) => {
+  const { prize_id, entry_number, password, is_winner } = req.body || {};
+  if (!prize_id || !entry_number || typeof password !== "string") {
+    return res.status(400).json({ error: "prize_id, entry_number, password are required" });
   }
-});
-
-// 参加者エントリー削除
-router.delete("/:id", async (req, res) => {
-  const { id } = req.params;
   try {
-    await pool.query("DELETE FROM entries WHERE id=$1", [id]);
-    res.json({ message: "Entry deleted" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to delete entry" });
+    const r = await pool.query(
+      `INSERT INTO entries (prize_id, entry_number, password, is_winner)
+         VALUES ($1,$2,$3,COALESCE($4,false))
+       ON CONFLICT (prize_id, entry_number) DO UPDATE
+         SET password = EXCLUDED.password,
+             is_winner = EXCLUDED.is_winner
+       RETURNING id,prize_id,entry_number,is_winner`,
+      [prize_id, entry_number, password, is_winner]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error("PUT /api/entries/upsert error:", e);
+    res.status(500).json({ error: "Failed to upsert entry" });
   }
 });
 

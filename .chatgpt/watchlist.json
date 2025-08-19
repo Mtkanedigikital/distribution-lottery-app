@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "path": "frontend/src/Admin.jsx",
+      "lines": 535,
+      "version": "v0.1_001",
+      "last_updated": "2025-08-19"
+    },
+    {
+      "path": "frontend/src/AdminList.jsx",
+      "lines": 211,
+      "version": "v0.1_001",
+      "last_updated": "2025-08-19"
+    },
+    {
+      "path": "frontend/src/AdminEdit.jsx",
+      "lines": 62,
+      "version": "v0.1_001",
+      "last_updated": "2025-08-19"
+    },
+    {
+      "path": "frontend/src/Participant.jsx",
+      "lines": 65,
+      "version": "v0.1_001",
+      "last_updated": "2025-08-19"
+    }
+  ],
+  "rules": "1. ヘッダフォーマット\n// ============================\n// File: <ファイルパス>\n// Version: <バージョン番号>\n// Last Updated: <更新日>\n//\n// 仕様:\n// - 機能や目的を簡潔に\n//\n// 履歴:\n// - 直近の更新内容\n// ============================\n\n2. 行数はVSCode基準とする\n\n3. ウォッチ対象ファイルはwatchlist.jsonに記録\n\n4. バージョンは v0.1 をベースに、更新ごとに必ず _NNN を +1（例: v0.1_001 → v0.1_002）。\n\n5. ヘッダ直後の空行はちょうど1行。\n\n6. 履歴は直近のみ残す\n\n7. 運用フロー:\n   - ユーザーがファイル貼付＋行数宣言\n   - ChatGPTがヘッダ付与・更新（Versionの _NNN を必ず+1）\n   - ユーザーがVSCodeで確認\n   - watchlist.jsonを更新\n\nRules:\n1. Header format\n// ============================\n// File: <file path>\n// Version: <version number>\n// Last Updated: <update date>\n//\n// Spec:\n// - Concise description of features or purpose\n//\n// History:\n// - Most recent change only\n// ============================\n\n2. Line count is based on VSCode (but not tracked in headers anymore)\n\n3. Watchlist files are recorded in watchlist.json\n\n4. Version starts from v0.1 and increments with _NNN for every update (e.g., v0.1_001 → v0.1_002)\n\n5. Exactly 1 blank line after the header\n\n6. Keep only the latest entry in History\n\n7. Operation flow:\n   - User pastes file + declares line count\n   - ChatGPT updates header (increment Version _NNN)\n   - User checks in VSCode\n   - Update watchlist.json\n"
+}
