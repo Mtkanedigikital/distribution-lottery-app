@@ -10,15 +10,16 @@
 ### 1. ヘッダコメントのルール
 - 各ソースコードの冒頭にヘッダコメントを入れる。
 - フォーマットは以下のとおり：
-  ```
-// ====================
-// File: ファイルパス
-// Version: v0.1_001
-// ---
-// 仕様: このファイルの役割・仕様の概要
-// 履歴: 直近の更新履歴のみ記載
-// ====================
-  ```
+
+    ```txt
+    // ====================
+    // File: ファイルパス
+    // Version: v0.1_001
+    // ---
+    // 仕様: このファイルの役割・仕様の概要
+    // 履歴: 直近の更新履歴のみ記載
+    // ====================
+    ```
 
 ### 2. バージョン番号管理
 - `v0.1_001` のように、更新ごとに末尾の `_NNN` を +1 する。
@@ -48,15 +49,16 @@
 ### 1. Header Comment Rule
 - Each source file must start with a header comment.
 - Format:
-  ```
-// ====================
-// File: file path
-// Version: v0.1_001
-// ---
-// Spec: Overview of the role/specification
-// History: Only the latest update
-// ====================
-  ```
+
+    ```txt
+    // ====================
+    // File: file path
+    // Version: v0.1_001
+    // ---
+    // Spec: Overview of the role/specification
+    // History: Only the latest update
+    // ====================
+    ```
 
 ### 2. Version Management
 - Use format `v0.1_001` and increment `_NNN` by +1 for each update.
