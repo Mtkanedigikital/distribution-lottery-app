@@ -21,7 +21,9 @@ export async function getPrizes() {
 }
 
 export async function getPrize(id) {
-  const res = await axios.get(`${API_BASE}/api/prizes/${encodeURIComponent(id)}`);
+  const res = await axios.get(
+    `${API_BASE}/api/prizes/${encodeURIComponent(id)}`,
+  );
   return res.data;
 }
 
@@ -31,17 +33,24 @@ export async function createPrize(data) {
 }
 
 export async function updatePrize(id, data) {
-  const res = await axios.put(`${API_BASE}/api/prizes/${encodeURIComponent(id)}`, data);
+  const res = await axios.put(
+    `${API_BASE}/api/prizes/${encodeURIComponent(id)}`,
+    data,
+  );
   return res.data;
 }
 
 export async function deletePrize(id) {
-  const res = await axios.delete(`${API_BASE}/api/prizes/${encodeURIComponent(id)}`);
+  const res = await axios.delete(
+    `${API_BASE}/api/prizes/${encodeURIComponent(id)}`,
+  );
   return res.data;
 }
 
 export async function getEntries(prizeId) {
-  const res = await axios.get(`${API_BASE}/api/entries/${encodeURIComponent(prizeId)}`);
+  const res = await axios.get(
+    `${API_BASE}/api/entries/${encodeURIComponent(prizeId)}`,
+  );
   return res.data;
 }
 
@@ -51,12 +60,17 @@ export async function createEntry(data) {
 }
 
 export async function updateEntry(id, data) {
-  const res = await axios.put(`${API_BASE}/api/entries/${encodeURIComponent(id)}`, data);
+  const res = await axios.put(
+    `${API_BASE}/api/entries/${encodeURIComponent(id)}`,
+    data,
+  );
   return res.data;
 }
 
 export async function deleteEntry(id) {
-  const res = await axios.delete(`${API_BASE}/api/entries/${encodeURIComponent(id)}`);
+  const res = await axios.delete(
+    `${API_BASE}/api/entries/${encodeURIComponent(id)}`,
+  );
   return res.data;
 }
 

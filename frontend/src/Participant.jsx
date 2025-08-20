@@ -54,7 +54,9 @@ export default function Participant() {
     (async () => {
       try {
         // /api/prizes 全体から対象だけ抜く（個別エンドポイントが無ければこの方法でOK）
-        const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+        const res = await fetch(`${API_BASE}/api/prizes`, {
+          headers: { Accept: "application/json" },
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const list = await res.json();
         const found = list.find((x) => x.id === prizeId);
@@ -88,15 +90,24 @@ export default function Participant() {
       <h2>参加者ページ</h2>
       {prize && (
         <div style={{ marginBottom: 12 }}>
-          <div><strong>賞品ID:</strong> {prize.id}</div>
-          <div><strong>賞品名:</strong> {prize.name}</div>
-          <div><strong>{formatJstDate(prize.result_time_jst)}</strong></div>
+          <div>
+            <strong>賞品ID:</strong> {prize.id}
+          </div>
+          <div>
+            <strong>賞品名:</strong> {prize.name}
+          </div>
+          <div>
+            <strong>{formatJstDate(prize.result_time_jst)}</strong>
+          </div>
         </div>
       )}
 
       {err && <p style={{ color: "red" }}>エラー: {err}</p>}
 
-      <form onSubmit={onSubmit} style={{ display: "grid", gap: 8, maxWidth: 320 }}>
+      <form
+        onSubmit={onSubmit}
+        style={{ display: "grid", gap: 8, maxWidth: 320 }}
+      >
         <label>
           抽選番号
           <input
@@ -121,11 +132,7 @@ export default function Participant() {
         <button type="submit">結果を確認</button>
       </form>
 
-      {message && (
-        <p style={{ marginTop: 12, fontWeight: 600 }}>
-          {message}
-        </p>
-      )}
+      {message && <p style={{ marginTop: 12, fontWeight: 600 }}>{message}</p>}
     </div>
   );
 }

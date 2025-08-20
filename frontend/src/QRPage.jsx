@@ -18,9 +18,15 @@ const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
 // 秒を「HH:MM:SS」へ
 function fmtHMS(sec) {
   const s = Math.max(0, Math.floor(sec ?? 0));
-  const h = Math.floor(s / 3600).toString().padStart(2, "0");
-  const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
-  const ss = Math.floor(s % 60).toString().padStart(2, "0");
+  const h = Math.floor(s / 3600)
+    .toString()
+    .padStart(2, "0");
+  const m = Math.floor((s % 3600) / 60)
+    .toString()
+    .padStart(2, "0");
+  const ss = Math.floor(s % 60)
+    .toString()
+    .padStart(2, "0");
   return `${h}:${m}:${ss}`;
 }
 
@@ -94,10 +100,14 @@ export default function QRPage() {
       setError("");
       setResultMsg("");
       try {
-        const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+        const res = await fetch(`${API_BASE}/api/prizes`, {
+          headers: { Accept: "application/json" },
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const list = await res.json();
-        const found = Array.isArray(list) ? list.find((x) => x.id === prizeId) : null;
+        const found = Array.isArray(list)
+          ? list.find((x) => x.id === prizeId)
+          : null;
         if (!aborted) {
           if (found) setPrize(found);
           else {
@@ -114,7 +124,9 @@ export default function QRPage() {
         if (!aborted) setLoading(false);
       }
     })();
-    return () => { aborted = true; };
+    return () => {
+      aborted = true;
+    };
   }, [prizeId]);
 
   // 結果確認
@@ -140,7 +152,8 @@ export default function QRPage() {
   };
 
   if (loading) return <div style={{ padding: 16 }}>読み込み中…</div>;
-  if (error) return <div style={{ padding: 16, color: "crimson" }}>{error}</div>;
+  if (error)
+    return <div style={{ padding: 16, color: "crimson" }}>{error}</div>;
   if (!prize) return <div style={{ padding: 16 }}>データがありません。</div>;
 
   return (
@@ -163,9 +176,7 @@ export default function QRPage() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
             まだ抽選結果は公開されていません⏳
           </div>
-          <div>
-            公開まで：{remainSec != null ? fmtHMS(remainSec) : "—"}
-          </div>
+          <div>公開まで：{remainSec != null ? fmtHMS(remainSec) : "—"}</div>
         </div>
       ) : (
         <>
@@ -188,7 +199,11 @@ export default function QRPage() {
                 placeholder="抽選番号（例: 001）"
                 value={entryNumber}
                 onChange={(e) => setEntryNumber(e.target.value)}
-                style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+                style={{
+                  padding: 10,
+                  borderRadius: 8,
+                  border: "1px solid #d1d5db",
+                }}
                 required
               />
               <input
@@ -196,7 +211,11 @@ export default function QRPage() {
                 placeholder="パスワード（例: 1111）"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+                style={{
+                  padding: 10,
+                  borderRadius: 8,
+                  border: "1px solid #d1d5db",
+                }}
                 required
               />
               <button
