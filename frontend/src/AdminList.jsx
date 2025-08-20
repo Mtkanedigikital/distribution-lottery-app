@@ -47,11 +47,25 @@ function PublishedBadge({ published }) {
     verticalAlign: "middle",
   };
   return published ? (
-    <span style={{ ...base, color: "#14532d", background: "#dcfce7", border: "1px solid #86efac" }}>
+    <span
+      style={{
+        ...base,
+        color: "#14532d",
+        background: "#dcfce7",
+        border: "1px solid #86efac",
+      }}
+    >
       公開済み
     </span>
   ) : (
-    <span style={{ ...base, color: "#7c2d12", background: "#ffedd5", border: "1px solid #fdba74" }}>
+    <span
+      style={{
+        ...base,
+        color: "#7c2d12",
+        background: "#ffedd5",
+        border: "1px solid #fdba74",
+      }}
+    >
       未公開
     </span>
   );
@@ -84,8 +98,10 @@ export default function AdminList() {
     })();
   }, []);
 
-  const participantUrl = (id) => `${window.location.origin}/p?prizeId=${encodeURIComponent(id)}`;
-  const adminUrl = (id) => `${window.location.origin}/admin?prizeId=${encodeURIComponent(id)}`;
+  const participantUrl = (id) =>
+    `${window.location.origin}/p?prizeId=${encodeURIComponent(id)}`;
+  const adminUrl = (id) =>
+    `${window.location.origin}/admin?prizeId=${encodeURIComponent(id)}`;
 
   const copy = async (text) => {
     try {
@@ -103,7 +119,7 @@ export default function AdminList() {
     const ts = (p) => {
       const t = Date.parse(p.publish_time_utc || "");
       return Number.isNaN(t) ? Infinity : t;
-      };
+    };
     return arr.sort((a, b) => {
       const ap = isPublishedUtc(a.publish_time_utc);
       const bp = isPublishedUtc(b.publish_time_utc);
@@ -139,9 +155,15 @@ export default function AdminList() {
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead>
             <tr>
-              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>賞品ID</th>
-              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>賞品名</th>
-              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>公開時刻(JST)</th>
+              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                賞品ID
+              </th>
+              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                賞品名
+              </th>
+              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                公開時刻(JST)
+              </th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>状態</th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>操作</th>
             </tr>
@@ -154,9 +176,21 @@ export default function AdminList() {
               const published = isPublishedUtc(it.publish_time_utc);
               return (
                 <tr key={id}>
-                  <td style={{ border: "1px solid #e5e7eb", padding: 8, fontFamily: "monospace" }}>{id}</td>
-                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>{name}</td>
-                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>{jst || "未設定"}</td>
+                  <td
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      padding: 8,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {id}
+                  </td>
+                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                    {name}
+                  </td>
+                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                    {jst || "未設定"}
+                  </td>
                   <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                     <PublishedBadge published={published} />
                   </td>
@@ -179,14 +213,33 @@ export default function AdminList() {
                         href={participantUrl(id)}
                         target="_blank"
                         rel="noreferrer"
-                        style={{ padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 8, textDecoration: "none" }}
+                        style={{
+                          padding: "6px 10px",
+                          border: "1px solid #d1d5db",
+                          borderRadius: 8,
+                          textDecoration: "none",
+                        }}
                       >
                         参加ページ
                       </a>
-                      <button onClick={() => copy(participantUrl(id))} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db" }}>
+                      <button
+                        onClick={() => copy(participantUrl(id))}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid #d1d5db",
+                        }}
+                      >
                         参加URLコピー
                       </button>
-                      <button onClick={() => copy(adminUrl(id))} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db" }}>
+                      <button
+                        onClick={() => copy(adminUrl(id))}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid #d1d5db",
+                        }}
+                      >
                         管理URLコピー
                       </button>
                     </div>

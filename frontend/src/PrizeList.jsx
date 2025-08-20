@@ -35,7 +35,9 @@ export default function PrizeList() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+        const res = await fetch(`${API_BASE}/api/prizes`, {
+          headers: { Accept: "application/json" },
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setPrizes(data);
@@ -54,9 +56,11 @@ export default function PrizeList() {
       <ul style={{ paddingLeft: 16 }}>
         {prizes.map((p) => (
           <li key={p.id} style={{ marginBottom: 8 }}>
-            <strong>{p.id}</strong> {p.name}（{formatJstDate(p.result_time_jst)}）
-            {" "}
-            <Link to={`/p?prizeId=${encodeURIComponent(p.id)}`}>抽選ページを開く</Link>
+            <strong>{p.id}</strong> {p.name}（{formatJstDate(p.result_time_jst)}
+            ）{" "}
+            <Link to={`/p?prizeId=${encodeURIComponent(p.id)}`}>
+              抽選ページを開く
+            </Link>
           </li>
         ))}
       </ul>

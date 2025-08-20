@@ -9,5 +9,5 @@ const root = createRoot(el);
 root.render(
   <BrowserRouter>
     <App />
-  </BrowserRouter>
+  </BrowserRouter>,
 );
