@@ -29,8 +29,9 @@
 
 ### 運用フロー
 1. VSCodeでファイルを修正。
-2. リコ（ChatGPT）がバージョン番号・ヘッダを更新。
-3. Gitでコミット。
+2. 修正後、必要に応じて依存関係を更新（frontend/backendごとに `npm --prefix` を使用）。
+3. Gitで状態を確認し、コミットとプッシュを行う。
+4. READMEやドキュメントもプログラムと同様にGitで管理する（更新履歴はコミットログで管理）。
 
 ### リコの由来
 - このプロジェクトにおけるアシスタントAIの名前は「リコ」。
@@ -69,8 +70,9 @@ This repository applies the following rules.
 
 ### Operation Flow
 1. Modify files in VSCode.
-2. Riko (ChatGPT) updates the version number and header.
-3. Commit with Git.
+2. After modification, update dependencies if necessary (use `npm --prefix` for frontend/backend).
+3. Check the Git status, then commit and push changes.
+4. Manage README and documentation with Git as well (revision history is tracked in commit logs).
 
 ### Origin of Riko
 - The assistant AI in this project is named "Riko".
