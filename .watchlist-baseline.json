@@ -1,0 +1,52 @@
+{
+  "frontend/src/Admin.jsx": {
+    "hash": "73d8b59d6256bf444f6745828834d4f604f9b3f5",
+    "lineCount": 606,
+    "size": 21238
+  },
+  "frontend/src/AdminList.jsx": {
+    "hash": "58005e0f209bc7aa76ad4e4207d80dfc29631697",
+    "lineCount": 264,
+    "size": 9100
+  },
+  "frontend/src/AdminEdit.jsx": {
+    "hash": "cac01cface15d78b23ba722c20de0d8f622a7d7c",
+    "lineCount": 65,
+    "size": 1960
+  },
+  "frontend/src/Participant.jsx": {
+    "hash": "9d5cf72b19736edb2af868607a78ff97e62dba16",
+    "lineCount": 189,
+    "size": 5311
+  },
+  "frontend/src/PrizeList.jsx": {
+    "hash": "6642aa2f1c4c3fe4e94d4345884e5d103cb6aa66",
+    "lineCount": 102,
+    "size": 3353
+  },
+  "frontend/src/QRPage.jsx": {
+    "hash": "9cadebe944c742263b9d14bea7b67bfc18dcaba2",
+    "lineCount": 253,
+    "size": 7995
+  },
+  "frontend/src/api.js": {
+    "hash": "9f4654b6ee4b3110912e0570aaed679624b579c8",
+    "lineCount": 158,
+    "size": 5000
+  },
+  "frontend/src/App.jsx": {
+    "hash": "602275f0a5cc5f1f15ac9b798aabbcd151476085",
+    "lineCount": 68,
+    "size": 2213
+  },
+  "frontend/src/locale/ja.js": {
+    "hash": "0ef8495bfb0f93f96c2f16fcd269f21bbbe966dc",
+    "lineCount": 181,
+    "size": 7526
+  },
+  "frontend/src/locale/index.js": {
+    "hash": "cef7753318ed9c2c31a8f747b9ce58fd1b9c70d5",
+    "lineCount": 27,
+    "size": 995
+  }
+}

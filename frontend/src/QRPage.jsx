@@ -1,19 +1,22 @@
 // ============================================================================
 // File: frontend/src/QRPage.jsx
-// Version: v0.2_001
-// Last Updated: 2025-08-20
-// 仕様の説明: ?prizeId を受け取り、/api/prizes から対象を検索。publish_time_utc で公開判定し、非公開時はカウントダウン、公開後は /api/lottery/check を呼び結果表示。
-// 機能: 入力欄(抽選番号/パス)と結果表示
-// UI: 軽いスタイル、最大幅520px
-// API: /api/prizes, /api/lottery/check
-// 注意: publish_time_utc が無い場合は公開扱い
-// 履歴の説明(直近): ヘッダ整備、useSearchParams 方式、公開ガード/カウントダウン統一、fetch化とエラー整理。
+// Version: v0.2_001 (2025-08-21)
+// ============================================================================
+// 仕様:
+// - URLクエリ ?prizeId を受け取り対象賞品を特定
+// - /api/prizes から賞品を取得し公開時刻（UTC）で公開判定、未公開時はカウントダウン表示
+// - 公開後は抽選番号/パスワードを送信して当落を確認
+// ============================================================================
+// 履歴（直近のみ）:
+// - ヘッダ整備、useSearchParams採用、公開ガード/カウントダウン実装、通信処理を api.js 経由に統一
+// - 固定文言を locale 辞書に統一
 // ============================================================================
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+import { getPrizes, checkResult } from "./api";
+import { ERROR_BOX_STYLE } from "./ui/styles";
+import t from "./locale";
 
 // 秒を「HH:MM:SS」へ
 function fmtHMS(sec) {
@@ -30,17 +33,18 @@ function fmtHMS(sec) {
   return `${h}:${m}:${ss}`;
 }
 
-// "2025-08-19 13:00" → "公開日: 2025/08/19 13:00"
+// "2025-08-19 13:00" → t('prizes.publishAt', "2025/08/19 13:00")
 function formatJstDate(str) {
   try {
-    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    if (!str || typeof str !== "string") return t("prizes.publishAt", str ?? "");
     const [datePart, timePartRaw] = str.trim().split(/\s+/);
     const [y, m, d] = (datePart || "").split("-");
     const timePart = (timePartRaw || "").slice(0, 5);
-    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
-    return `公開日: ${y}/${m}/${d} ${timePart}`;
+    if (!y || !m || !d || !timePart) return t("prizes.publishAt", str);
+    const jst = `${y}/${m}/${d} ${timePart}`;
+    return t("prizes.publishAt", jst);
   } catch {
-    return `公開日: ${str}`;
+    return t("prizes.publishAt", str);
   }
 }
 
@@ -100,11 +104,7 @@ export default function QRPage() {
       setError("");
       setResultMsg("");
       try {
-        const res = await fetch(`${API_BASE}/api/prizes`, {
-          headers: { Accept: "application/json" },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const list = await res.json();
+        const list = await getPrizes();
         const found = Array.isArray(list)
           ? list.find((x) => x.id === prizeId)
           : null;
@@ -118,7 +118,7 @@ export default function QRPage() {
       } catch (e) {
         if (!aborted) {
           setPrize(null);
-          setError("読み込みに失敗しました。時間を置いてお試しください。");
+          setError(t("qr.errorGeneric"));
         }
       } finally {
         if (!aborted) setLoading(false);
@@ -138,27 +138,20 @@ export default function QRPage() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/lottery/check`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prizeId, entryNumber, password }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      const data = await checkResult({ prizeId, entryNumber, password });
       setResultMsg(data?.result ?? "結果を取得できませんでした。");
-    } catch (_e) {
-      setResultMsg("通信エラーが発生しました。時間を置いてお試しください。");
+    } catch (e) {
+      setResultMsg(t("qr.errorNetwork"));
     }
   };
 
-  if (loading) return <div style={{ padding: 16 }}>読み込み中…</div>;
-  if (error)
-    return <div style={{ padding: 16, color: "crimson" }}>{error}</div>;
-  if (!prize) return <div style={{ padding: 16 }}>データがありません。</div>;
+  if (loading) return <div style={{ padding: 16 }}>{t("common.loading")}</div>;
+  if (error) return <div style={ERROR_BOX_STYLE}>{t("common.errorPrefix")}{error}</div>;
+  if (!prize) return <div style={{ padding: 16 }}>{t("qr.noData")}</div>;
 
   return (
     <div style={{ padding: 16, maxWidth: 520, margin: "0 auto" }}>
-      <h2 style={{ marginBottom: 8 }}>{prize.name} の抽選ページ</h2>
+      <h2 style={{ marginBottom: 8 }}>{t("qr.title", prize.name)}</h2>
       <div style={{ marginBottom: 12, color: "#555" }}>
         {formatJstDate(prize.result_time_jst || "")}
       </div>
@@ -174,9 +167,9 @@ export default function QRPage() {
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            まだ抽選結果は公開されていません⏳
+            {t("qr.notPublished")}
           </div>
-          <div>公開まで：{remainSec != null ? fmtHMS(remainSec) : "—"}</div>
+          <div>{t("qr.until")}{remainSec != null ? fmtHMS(remainSec) : "—"}</div>
         </div>
       ) : (
         <>
@@ -191,12 +184,12 @@ export default function QRPage() {
             }}
           >
             <div style={{ marginBottom: 8 }}>
-              抽選番号とパスワードを入力して結果を確認してください。
+              {t("qr.formIntro")}
             </div>
 
             <div style={{ display: "grid", gap: 8 }}>
               <input
-                placeholder="抽選番号（例: 001）"
+                placeholder={t("qr.entryPlaceholder")}
                 value={entryNumber}
                 onChange={(e) => setEntryNumber(e.target.value)}
                 style={{
@@ -208,7 +201,7 @@ export default function QRPage() {
               />
               <input
                 type="password"
-                placeholder="パスワード（例: 1111）"
+                placeholder={t("qr.passwordPlaceholder")}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 style={{
@@ -230,7 +223,7 @@ export default function QRPage() {
                   fontWeight: 600,
                 }}
               >
-                抽選結果を確認する
+                {t("qr.submit")}
               </button>
             </div>
           </form>
@@ -245,14 +238,14 @@ export default function QRPage() {
                 background: "#ffffff",
               }}
             >
-              結果：{resultMsg}
+              {t("qr.resultPrefix")}{resultMsg}
             </div>
           )}
         </>
       )}
 
       <div style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>
-        賞品ID：{prizeId}
+        {t("qr.prizeIdPrefix")}{prizeId}
       </div>
     </div>
   );

@@ -1,0 +1,10 @@
+frontend/src/Admin.jsx
+frontend/src/AdminList.jsx
+frontend/src/AdminEdit.jsx
+frontend/src/Participant.jsx
+frontend/src/PrizeList.jsx
+frontend/src/QRPage.jsx
+frontend/src/api.js
+frontend/src/App.jsx
+frontend/src/locale/ja.js
+frontend/src/locale/index.js

@@ -1,22 +1,35 @@
-// backend/index.js ーーー 全置き換え版
+require('dotenv').config();
+
+// ============================================================================
+// File: backend/index.js
+// Version: v0.1_006(2025-08-24)
+// ============================================================================
+// Specifications:
+// - ExpressベースのAPIサーバ（/api/prizes, /api/entries, /api/lottery, /api/admin-debug）
+// - dotenv を最優先で初期化（環境変数を全ミドルウェアで確実に参照）
+// - CORS（FRONTEND_ORIGIN対応, allowedHeadersにx-admin-secret）と JSON ボディ処理
+// - ヘルスチェック: /health, /api/health
+// - frontend/build がある場合のみ静的配信 + SPAフォールバック（/api/を除外）
+// ============================================================================
+// History (recent only):
+// - 2025-08-24: 正式API /api/lottery/check を lotteryRouter('/check') に直委譲するルートを追加
+// - 2025-08-24: 互換ルートを撤去し、正式API（/api/lottery/check）に一本化
+// - 2025-08-24: 互換ルート /api/check → /api/lottery/check を追加
+// - 2025-08-24: dotenv 初期化をファイル先頭に移動
+// - 2025-08-24: CORS allowedHeaders に x-admin-secret を追加（管理UIの作成API許可）
+// - 2025-08-23: CORSを複数オリジン（localhost / LAN）に対応
+// - 2025-08-23: 開発時に Prisma/Knex を app.locals に自動アタッチ（存在する場合のみ）
+// - 2025-08-23: 開発限定 /dev ルートの二重登録を解消
+// - 2025-08-22: 静的配信を存在チェック付きに変更、SPAフォールバックをミドルウェア化（Express v5対応）
+// - 2025-08-22: CORSをプリフライト許容に変更、/health を追加
+// ============================================================================
 
 // 1) 必要モジュール
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-
-// 2) .env を読み込む（環境変数より優先しない = override:false）
-try {
-  const dotenv = require("dotenv");
-  const envPath = path.join(__dirname, ".env"); // backend/.env を明示
-  dotenv.config({
-    path: envPath,
-    override: false, // ★重要: 既に渡された環境変数を上書きしない
-  });
-} catch (_) {
-  // dotenv 未インストールでも起動できるように
-}
+const fs = require("fs");
 
 // 3) ルーターは .env ロード後に require
 const prizesRouter = require("./routes/prizes");
@@ -38,19 +51,70 @@ adminDebug.get("/env", adminAuth, (req, res) => {
 
 // 4) アプリ本体
 const app = express();
-app.use(
-  cors({
-    origin: "*",
-    credentials: true,
-    allowedHeaders: [
-      "Content-Type",
-      "X-Requested-With",
-      "Authorization",
-      "x-admin-secret",
-    ],
-  })
-);
+// Allow localhost and LAN origins in dev (and FRONTEND_ORIGIN override)
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_ORIGIN || 'http://localhost:3000',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://192.168.40.143:3000',
+  'http://192.168.40.75:3000'
+].filter(Boolean);
+
+const corsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // allow curl/no-origin in dev
+    return cb(null, ALLOWED_ORIGINS.includes(origin));
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','x-admin-secret'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
+// Express v5: '*'や'/(.*)'ではなく、名前付き+*修飾子を使う
+// Use RegExp to avoid path-to-regexp named-parameter parsing errors on Express v5
+app.options(/^\/api(?:\/.*)?$/, cors(corsOptions));
+// [dev] Optionally expose datastore to app.locals so /dev tools can update records
+if (process.env.NODE_ENV !== 'production') {
+  try {
+    // Prefer Prisma if available
+    const { PrismaClient } = require('@prisma/client');
+    try {
+      app.locals.prisma = new PrismaClient();
+      console.log('[dev] prisma attached to app.locals');
+    } catch (_) {}
+  } catch (_) {}
+  try {
+    // Or attach Knex if project uses it (./db should export a knex instance or config)
+    const maybeKnex = require('./db');
+    let knexInstance = null;
+    if (typeof maybeKnex === 'function') {
+      knexInstance = maybeKnex; // exported as instance function
+    } else if (maybeKnex && typeof maybeKnex.knex === 'function') {
+      knexInstance = maybeKnex.knex; // exported as { knex }
+    } else if (maybeKnex && typeof maybeKnex.default === 'function') {
+      knexInstance = maybeKnex.default; // ESM default export
+    }
+    if (knexInstance) {
+      app.locals.knex = knexInstance;
+      console.log('[dev] knex attached to app.locals');
+    }
+  } catch (_) {}
+}
+if (process.env.NODE_ENV !== 'production') {
+  app.use("/dev", require("./dev/publishNow"));
+  console.log("[dev] Temporary publish API enabled: POST /dev/publish/:id");
+}
 app.use(bodyParser.json());
+app.get('/health', (_req, res) => res.status(200).json({ ok: true }));
+app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
+
+// 正式: /api/lottery/check → lotteryRouter('/check') に直接委譲（全メソッド対応）
+app.use("/api/lottery/check", (req, res, next) => {
+  req.url = "/check";            // lotteryRouter 内のルートに合わせる
+  return lotteryRouter(req, res, next);
+});
 
 // 5) API ルート
 app.use("/api/prizes", prizesRouter);
@@ -58,15 +122,6 @@ app.use("/api/entries", entriesRouter);
 app.use("/api/lottery", lotteryRouter);
 app.use("/api/admin-debug", adminDebug);
 
-// 6) フロントエンド（build）配信 & SPA フォールバック
-const frontendBuild = path.join(__dirname, "..", "frontend", "build");
-app.use(express.static(frontendBuild));
-// Express 5（path-to-regexp v6）は "*" が使えないので正規表現でフォールバック
-app.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
-    if (err) res.status(500).send(err);
-  });
-});
 
 // 7) 起動ログ（ADMIN_SECRET は長さのみ）
 const adminLen = (process.env.ADMIN_SECRET || "").length;
@@ -79,3 +134,20 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Lottery backend (DB) running on port ${PORT}`);
 });
+// 6) フロントエンド（build）配信 & SPA フォールバック（build がある時のみ有効）
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+const indexHtml = path.join(frontendBuild, "index.html");
+if (fs.existsSync(indexHtml)) {
+  app.use(express.static(frontendBuild));
+  // SPA フォールバック：正規表現ルートを使わずに /api を除外
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+      return res.sendFile(indexHtml, (err) => {
+        if (err) res.status(500).send(err);
+      });
+    }
+    next();
+  });
+} else {
+  console.warn(`[boot] frontend build not found at ${indexHtml}; skipping static serving.`);
+}

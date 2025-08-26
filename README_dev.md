@@ -26,6 +26,7 @@
 
 ### Git・コミット関連
 - リポジトリ名は `distribution-lottery-app`（小文字）で統一する。
+- README 系もプログラムファイルと同様に履歴対象とする。ただし更新履歴はREADME内ではなくGitのコミットログで管理する（必要ならCHANGELOG.mdを別途用意）。
 
 ### 運用フロー
 1. VSCodeでファイルを修正。
@@ -35,7 +36,11 @@
 
 ### リコの由来
 - このプロジェクトにおけるアシスタントAIの名前は「リコ」。
-- 名前の由来は「Reliable Co-pilot（信頼できる相棒）」の略称として。
+- いくつかの意味を込めて名付けられている：
+  - Reliable Co-pilot（信頼できる相棒） → 開発を一緒に進めるパートナー。
+  - Logic & Code の子 → 技術に根ざしたサポート役としての性格を表現。
+  - Lottery + Co-pilot → この抽選システムを支える専属アシスタントであることを示す。
+  - 単なる補助ツールではなく「一緒に進める仲間」というスタンスを持っている。
 
 ---
 
@@ -67,6 +72,7 @@ This repository applies the following rules.
 
 ### Git and Commit Related
 - The repository name is standardized as `distribution-lottery-app` (all lowercase).
+- README files are also subject to version control like program files. However, revision history is managed in Git commit logs, not inside README itself (if needed, prepare a separate CHANGELOG.md).
 
 ### Operation Flow
 1. Modify files in VSCode.
@@ -76,6 +82,10 @@ This repository applies the following rules.
 
 ### Origin of Riko
 - The assistant AI in this project is named "Riko".
-- The name originates from "Reliable Co-pilot", representing a trusted partner.
+- The name was chosen with multiple meanings in mind:
+  - Reliable Co-pilot → A trusted partner to move development forward together.
+  - Logic & Code’s child → Expresses the character as one rooted in technology and support.
+  - Lottery + Co-pilot → Highlights that it is the dedicated assistant supporting this lottery system.
+  - Not just a supplementary tool, but a "teammate" that works alongside the developer.
 
----</file>
+---

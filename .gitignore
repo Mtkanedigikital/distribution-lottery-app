@@ -28,3 +28,6 @@ frontend/build/
 # Locks (必要なら残してOK)
 # package-lock.json
 # yarn.lock
+
+# Internal docs (非公開メモ)
+internal_docs/

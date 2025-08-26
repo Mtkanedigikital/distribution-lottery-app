@@ -1,17 +1,23 @@
 // ============================================================================
 // File: frontend/src/AdminList.jsx
-// Version: v0.2_001
-// Last Updated: 2025-08-20
-// === 仕様の説明 ===
-// 管理用の賞品一覧ページ。API (/api/prizes) から全賞品を取得し、未公開→公開の順に表示。
-// 参加/管理ページURLの表示・コピー、公開状態バッジ、JSTの日時整形、並べ替えオプションを提供。
-// === 直近の更新概要 ===
-// - ヘッダフォーマットをプロジェクト標準（//=== 囲み, 空行1）に変更（機能差分なし）
+// Version: v0.2_005 (2025-08-24)
+// ============================================================================
+// Specifications:
+// - 管理用の賞品一覧ページ。API (/api/prizes) から全賞品を取得し、未公開→公開の順に表示
+// - 参加/管理ページURLの表示・コピー、公開状態バッジ、JST整形、並べ替えオプションを提供
+// ============================================================================
+// History (recent only):
+// - API取得と並べ替えロジックの実装
+// - 2025-08-24: 公開時刻の表示を publish_time_utc 基準のJST表示に修正（result_time_jst 参照の誤りを修正）
+// - 2025-08-24: 公開判定を isPublishedJST に変更（publish_time_utc 優先、無い場合は publish_time_jst をJSTとして比較）。バッジ/並べ替えで使用
+// - 2025-08-24: カードに参加者数表示を追加
+// - 2025-08-24: 参加ページURLを /participant に修正（/p から）
 // ============================================================================
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import { getEntryCount } from "./api";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
 
@@ -29,12 +35,40 @@ function formatJstDate(str) {
   }
 }
 
-/** publish_time_utc が今以前なら公開済み */
-function isPublishedUtc(publishUtc) {
-  if (!publishUtc) return false;
-  const t = Date.parse(publishUtc);
-  if (Number.isNaN(t)) return false;
-  return t <= Date.now();
+/** ISO UTC → JST "YYYY/MM/DD HH:mm" */
+function formatJstFromUtc(utcStr) {
+  try {
+    if (!utcStr) return "";
+    const d = new Date(utcStr);
+    if (Number.isNaN(d.getTime())) return "";
+    const s = d.toLocaleString("ja-JP", {
+      timeZone: "Asia/Tokyo",
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    // ja-JP は "2025/08/24 09:30" 形式
+    return s.replace(/\u200E/g, "");
+  } catch {
+    return "";
+  }
+}
+
+/** publish_time_utc を優先し、なければ publish_time_jst を JST(+09:00) として比較 */
+function isPublishedJST(publishUtc, publishJst) {
+  if (publishUtc) {
+    const t = Date.parse(publishUtc); // ISO UTC想定
+    if (!Number.isNaN(t)) return t <= Date.now();
+  }
+  if (publishJst) {
+    const s = publishJst.replace(/\//g, '-').replace(' ', 'T') + '+09:00';
+    const t = Date.parse(s);
+    if (!Number.isNaN(t)) return t <= Date.now();
+  }
+  return false;
 }
 
 function PublishedBadge({ published }) {
@@ -76,6 +110,8 @@ export default function AdminList() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
   const [unpublishedFirst, setUnpublishedFirst] = useState(true);
+  const [counts, setCounts] = useState({});        // { [prizeId]: number }
+  const [loadingCounts, setLoadingCounts] = useState({}); // { [prizeId]: boolean }
 
   useEffect(() => {
     (async () => {
@@ -89,6 +125,22 @@ export default function AdminList() {
         // 現行APIは「配列」を返す想定
         const list = Array.isArray(r.data) ? r.data : (r.data?.items ?? []);
         setItems(list);
+        // 参加者数の取得（各賞品IDごとに並列）
+        setCounts({});
+        setLoadingCounts({});
+        (list || []).forEach(async (p) => {
+          const pid = p.id ?? p.prizeId;
+          if (!pid) return;
+          setLoadingCounts((m) => ({ ...m, [pid]: true }));
+          try {
+            const c = await getEntryCount(pid);
+            setCounts((m) => ({ ...m, [pid]: typeof c === "number" ? c : 0 }));
+          } catch {
+            setCounts((m) => ({ ...m, [pid]: 0 }));
+          } finally {
+            setLoadingCounts((m) => ({ ...m, [pid]: false }));
+          }
+        });
         if (!list.length) setMsg("賞品が登録されていません。");
       } catch (e) {
         setMsg("一覧の取得に失敗しました。");
@@ -99,7 +151,7 @@ export default function AdminList() {
   }, []);
 
   const participantUrl = (id) =>
-    `${window.location.origin}/p?prizeId=${encodeURIComponent(id)}`;
+    `${window.location.origin}/participant?prizeId=${encodeURIComponent(id)}`;
   const adminUrl = (id) =>
     `${window.location.origin}/admin?prizeId=${encodeURIComponent(id)}`;
 
@@ -121,8 +173,8 @@ export default function AdminList() {
       return Number.isNaN(t) ? Infinity : t;
     };
     return arr.sort((a, b) => {
-      const ap = isPublishedUtc(a.publish_time_utc);
-      const bp = isPublishedUtc(b.publish_time_utc);
+      const ap = isPublishedJST(a.publish_time_utc, a.publish_time_jst);
+      const bp = isPublishedJST(b.publish_time_utc, b.publish_time_jst);
       if (ap !== bp) return ap ? 1 : -1; // 未公開を先に
       return ts(a) - ts(b); // 近い順
     });
@@ -162,8 +214,9 @@ export default function AdminList() {
                 賞品名
               </th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
-                公開時刻(JST)
+                公開日時（JST）
               </th>
+              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>参加者数</th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>状態</th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>操作</th>
             </tr>
@@ -172,8 +225,8 @@ export default function AdminList() {
             {sorted.map((it) => {
               const id = it.id ?? it.prizeId; // 旧フィールド名にも一応対応
               const name = it.name ?? it.prizeName;
-              const jst = formatJstDate(it.result_time_jst ?? it.resultTimeJST);
-              const published = isPublishedUtc(it.publish_time_utc);
+              const jst = it.publish_time_utc ? formatJstFromUtc(it.publish_time_utc) : formatJstDate(it.result_time_jst ?? it.resultTimeJST);
+              const published = isPublishedJST(it.publish_time_utc, it.publish_time_jst);
               return (
                 <tr key={id}>
                   <td
@@ -191,6 +244,7 @@ export default function AdminList() {
                   <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                     {jst || "未設定"}
                   </td>
+                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>{loadingCounts[id] ? "…" : `${counts[id] ?? 0}件`}</td>
                   <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                     <PublishedBadge published={published} />
                   </td>
@@ -249,7 +303,7 @@ export default function AdminList() {
             })}
             {!sorted.length && !loading && (
               <tr>
-                <td colSpan="5" style={{ padding: 12, color: "#6b7280" }}>
+                <td colSpan="6" style={{ padding: 12, color: "#6b7280" }}>
                   データがありません。
                 </td>
               </tr>
