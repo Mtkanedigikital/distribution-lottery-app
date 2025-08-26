@@ -1,42 +1,87 @@
-// -----------------------------------------------------------------------------
+// ============================================================================
 // File: frontend/src/App.jsx
-// Version: v0.1 (2025-08-19)
-//
-// 概要:
-// - React Router を利用したルーティング設定
-// - ヘッダーに「抽選予定一覧」「管理：賞品一覧」リンクを表示
-// - "/" アクセス時は "/prizes" にリダイレクト
-// - 管理ページ: /admin
-// - 参加者ページ: /p （ヘッダーからは非表示）
-// - 存在しないパスは 404 Not Found を表示
-// -----------------------------------------------------------------------------
+// Version: v0.1_006 (2025-08-24)
+// ============================================================================
+// Specifications:
+// - ルーティングを Layout 配下に集約（共通ヘッダー分離）
+// - Link→NavLink で現在地ハイライト
+// - Admin/PrizeList/Participant を lazy + Suspense で遅延読込
+// - 各画面に ErrorBoundary を適用 / 404 は NotFound へ分離
+// ============================================================================
+// History (recent only):
+// - Layout分離・NavLink化・lazy/Suspense・ErrorBoundary・NotFound導入
+// - 2025-08-23: /participant, /participant/:id を追加。/p は Participant に割当維持
+// - 2025-08-24: /admin を Admin に戻し、/admin/list に AdminList を追加
+// - 2025-08-24: B案採用（/admin=list統合）。/admin/list ルートを撤去し、Admin.jsx に参加者数を出す方針
+// ============================================================================
 
-import React from "react";
-import { Routes, Route, Link, Navigate } from "react-router-dom";
-import Admin from "./Admin";
-import Participant from "./Participant";
-import PrizeList from "./PrizeList";
+import React, { Suspense, lazy } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import Layout from "./Layout";
+import ErrorBoundary from "./ui/ErrorBoundary";
+import NotFound from "./NotFound";
+
+const Admin = lazy(() => import("./Admin"));
+const AdminList = lazy(() => import("./AdminList"));
+const Participant = lazy(() => import("./Participant"));
+const PrizeList = lazy(() => import("./PrizeList"));
 
 export default function App() {
   return (
-    <>
-      <header style={{ padding: 12, borderBottom: "1px solid #eee" }}>
-        <nav style={{ display: "flex", gap: 16 }}>
-          <strong>抽選アプリ</strong>
-          <Link to="/prizes">抽選予定一覧</Link>
-          <Link to="/admin">管理：賞品一覧</Link>
-          {/* 参加者ページはヘッダーから外し、リンク経路は管理/QRに限定 */}
-        </nav>
-      </header>
-      <main style={{ padding: 16 }}>
-        <Routes>
+    <Suspense fallback={<div>Loading...</div>}>
+      <Routes>
+        <Route element={<Layout />}>
           <Route path="/" element={<Navigate to="/prizes" replace />} />
-          <Route path="/prizes" element={<PrizeList />} />
-          <Route path="/admin" element={<Admin />} />
-          <Route path="/p" element={<Participant />} />
-          <Route path="*" element={<div>404 Not Found</div>} />
-        </Routes>
-      </main>
-    </>
+          <Route
+            path="/prizes"
+            element={
+              <ErrorBoundary scope="PrizeList">
+                <PrizeList />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <ErrorBoundary scope="Admin">
+                <Admin />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/p"
+            element={
+              <ErrorBoundary scope="Participant">
+                <Participant />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/participant"
+            element={
+              <ErrorBoundary scope="Participant">
+                <Participant />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/participant/:id"
+            element={
+              <ErrorBoundary scope="Participant">
+                <Participant />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="*"
+            element={
+              <ErrorBoundary scope="NotFound">
+                <NotFound />
+              </ErrorBoundary>
+            }
+          />
+        </Route>
+      </Routes>
+    </Suspense>
   );
 }

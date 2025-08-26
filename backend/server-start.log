@@ -1,0 +1,51 @@
+[dotenv@17.2.1] injecting env (4) from .env -- tip: 📡 observe env with Radar: https://dotenvx.com/radar
+[route-reg] router.get "/"
+[route-reg] router.get "/"
+[route-reg] router.get "/:id"
+[route-reg] router.get "/:id"
+[route-reg] router.post "/"
+[route-reg] router.post "/"
+[route-reg] router.put "/:id"
+[route-reg] router.put "/:id"
+[route-reg] router.delete "/:id"
+[route-reg] router.delete "/:id"
+[route-reg] router.post "/:id/publish_now"
+[route-reg] router.post "/:id/publish_now"
+[route-reg] router.get "/:prizeId"
+[route-reg] router.get "/:prizeId"
+[route-reg] router.get "/:prizeId"
+[route-reg] router.post "/"
+[route-reg] router.post "/"
+[route-reg] router.post "/"
+[route-reg] router.put "/upsert"
+[route-reg] router.put "/upsert"
+[route-reg] router.put "/upsert"
+[route-reg] router.post "/check"
+[route-reg] router.post "/check"
+[route-reg] router.post "/check"
+[route-reg] router.post "/check"
+[route-reg] router.get "/debug/:prizeId"
+[route-reg] router.get "/debug/:prizeId"
+[route-reg] router.get "/debug/:prizeId"
+[route-reg] router.get "/debug/:prizeId"
+[route-reg] router.get "/env"
+[route-reg] router.get "/env"
+[route-reg] router.get "/env"
+[route-reg] router.get "/env"
+[route-reg] router.get "/env"
+[route-reg] app.use <fn>
+[route-reg] app.use <fn>
+[route-reg] app.use <fn>
+[route-reg] app.use <fn>
+[route-reg] app.use <fn>
+[uncaught] TypeError: Unexpected ( at 10, expected END: https://git.new/pathToRegexpError
+    at Iter.consume (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:123:15)
+    at consume (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:179:16)
+    at parse (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:183:20)
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:294:74
+    at Array.map (<anonymous>)
+    at pathToRegexp (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:294:25)
+    at Object.match (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:264:30)
+    at matcher (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:86:23)
+    at new Layer (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:93:62)
+    at router.route (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:428:17)
