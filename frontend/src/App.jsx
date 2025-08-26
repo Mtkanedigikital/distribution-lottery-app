@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/App.jsx
-// Version: v0.1_006 (2025-08-24)
+// Version: v0.1_007 (2025-08-26)
 // ============================================================================
 // Specifications:
 // - ルーティングを Layout 配下に集約（共通ヘッダー分離）
@@ -9,6 +9,7 @@
 // - 各画面に ErrorBoundary を適用 / 404 は NotFound へ分離
 // ============================================================================
 // History (recent only):
+// - 2025-08-26: 未使用の AdminList import を削除（ESLint no-unused-vars 解消）
 // - Layout分離・NavLink化・lazy/Suspense・ErrorBoundary・NotFound導入
 // - 2025-08-23: /participant, /participant/:id を追加。/p は Participant に割当維持
 // - 2025-08-24: /admin を Admin に戻し、/admin/list に AdminList を追加
@@ -22,7 +23,6 @@ import ErrorBoundary from "./ui/ErrorBoundary";
 import NotFound from "./NotFound";
 
 const Admin = lazy(() => import("./Admin"));
-const AdminList = lazy(() => import("./AdminList"));
 const Participant = lazy(() => import("./Participant"));
 const PrizeList = lazy(() => import("./PrizeList"));
 

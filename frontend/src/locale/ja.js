@@ -1,12 +1,13 @@
 // ============================================================================
 // File: frontend/src/locale/ja.js
-// Version: v0.1_005 (2025-08-24)
+// Version: v0.1_007 (2025-08-26)
 // ============================================================================
 // 仕様:
 // - 日本語ロケール定義
 // - 画面文言やメッセージを集約
 // ============================================================================
 // 履歴（直近のみ）:
+// - 2025-08-26: participant.resultPrefix をフラグ切替対応（REACT_APP_FLAGS=participant_text_v2）
 // - 新規作成
 // - QRPage/Participant 固定文言の辞書キーを追加
 // - 2025-08-23: QRPage 用の辞書キー（submit / entryPlaceholder / passwordPlaceholder）を追加
@@ -37,6 +38,7 @@ const ja = {
   },
   participant: {
     title: "抽選結果確認",
+    resultPrefix: (process.env.REACT_APP_FLAGS || "").includes("participant_text_v2") ? "当落結果：" : "結果：",
     // --- aliases for components that reference flat keys ---
     prizeIdPrefix: "賞品ID",
     prizeNamePrefix: "賞品名",
