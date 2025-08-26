@@ -33,12 +33,17 @@ const ja = {
     publishAt: (txt) => `公開日時（JST）: ${txt}`,
     openParticipant: "参加者ページを開く",
     saveQrPng: "QRコードをPNGで保存",
-    errorNetwork: "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
+    errorNetwork:
+      "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
     errorGeneric: "取得に失敗しました。時間をおいて再度お試しください。",
   },
   participant: {
     title: "抽選結果確認",
-    resultPrefix: (process.env.REACT_APP_FLAGS || "").includes("participant_text_v2") ? "当落結果：" : "結果：",
+    resultPrefix: (process.env.REACT_APP_FLAGS || "").includes(
+      "participant_text_v2",
+    )
+      ? "当落結果："
+      : "結果：",
     // --- aliases for components that reference flat keys ---
     prizeIdPrefix: "賞品ID",
     prizeNamePrefix: "賞品名",
@@ -81,11 +86,17 @@ const ja = {
     entryPlaceholder: "抽選番号（例: 001）",
     passwordPlaceholder: "パスワード（例: 1111）",
     submit: "抽選結果を確認する",
-    errorNetwork: "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
+    errorNetwork:
+      "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
     errorGeneric: "処理に失敗しました。時間をおいて再度お試しください。",
   },
   admin: {
-    title: { prizeList: "管理：賞品一覧・作成", createPrize: "賞品の新規作成", upsertManual: "単票 UPSERT（手動）", csvUpload: "参加者エントリー一括投入（CSV）", },
+    title: {
+      prizeList: "管理：賞品一覧・作成",
+      createPrize: "賞品の新規作成",
+      upsertManual: "単票 UPSERT（手動）",
+      csvUpload: "参加者エントリー一括投入（CSV）",
+    },
     label: {
       secret: "管理シークレット（ADMIN_SECRET）",
       unpublishedFirst: "未公開を上に並べ替える",
@@ -186,7 +197,8 @@ const ja = {
     loading: "読み込み中です…",
     retry: "再読み込み",
     errorPrefix: "エラー: ",
-    network: "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
+    network:
+      "ネットワークエラーが発生しました。時間をおいて再度お試しください。",
     server: "サーバーでエラーが発生しました。時間をおいて再度お試しください。",
   },
   format: {

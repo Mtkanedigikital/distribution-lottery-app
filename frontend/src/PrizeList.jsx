@@ -22,7 +22,8 @@ import t from "./locale";
 // "2025-08-19 13:00" → t('prizes.publishAt', "2025/08/19 13:00")
 function formatJstDate(str) {
   try {
-    if (!str || typeof str !== "string") return t("prizes.publishAt", str ?? "");
+    if (!str || typeof str !== "string")
+      return t("prizes.publishAt", str ?? "");
     const [datePart, timePartRaw] = str.trim().split(/\s+/);
     const [y, m, d] = datePart.split("-");
     const timePart = (timePartRaw || "").slice(0, 5);
@@ -68,7 +69,10 @@ export default function PrizeList() {
         </div>
       ) : err ? (
         <div style={ERROR_BOX_STYLE}>
-          <div style={{ marginBottom: 8 }}>{t("common.errorPrefix")}{err}</div>
+          <div style={{ marginBottom: 8 }}>
+            {t("common.errorPrefix")}
+            {err}
+          </div>
           <button
             type="button"
             onClick={load}
@@ -89,7 +93,8 @@ export default function PrizeList() {
         <ul style={{ paddingLeft: 16 }}>
           {prizes.map((p) => (
             <li key={p.id} style={{ marginBottom: 8 }}>
-              <strong>{p.id}</strong> {p.name}（{formatJstDate(p.result_time_jst)}）{" "}
+              <strong>{p.id}</strong> {p.name}（
+              {formatJstDate(p.result_time_jst)}）{" "}
               <Link to={`/participant?prizeId=${encodeURIComponent(p.id)}`}>
                 {t("prizes.openParticipant")}
               </Link>

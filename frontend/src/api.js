@@ -48,7 +48,10 @@ function getAdminSecret() {
     return "";
   }
 }
-export async function adminFetch(path, { method = "GET", headers = {}, body } = {}) {
+export async function adminFetch(
+  path,
+  { method = "GET", headers = {}, body } = {},
+) {
   const adminKey = getAdminSecret();
   const h = {
     ...(headers || {}),
@@ -96,7 +99,9 @@ export async function getPrizes() {
 }
 
 export async function getPrize(id) {
-  const res = await requestWithRetry(() => api.get(`/api/prizes/${encodeURIComponent(id)}`));
+  const res = await requestWithRetry(() =>
+    api.get(`/api/prizes/${encodeURIComponent(id)}`),
+  );
   return res.data;
 }
 
@@ -124,7 +129,9 @@ export async function deletePrize(id) {
 
 // ------- entries -------
 export async function getEntries(prizeId) {
-  const res = await requestWithRetry(() => api.get(`/api/entries/${encodeURIComponent(prizeId)}`));
+  const res = await requestWithRetry(() =>
+    api.get(`/api/entries/${encodeURIComponent(prizeId)}`),
+  );
   return res.data;
 }
 
@@ -192,11 +199,17 @@ export async function getEntryCount(prizeId) {
 }
 
 // ------- check -------
-export async function checkResult({ prizeId, prize_id, entryNumber, entry_number, password }) {
+export async function checkResult({
+  prizeId,
+  prize_id,
+  entryNumber,
+  entry_number,
+  password,
+}) {
   // 呼び出し互換：camel/snake どちらのキーでも受け取れるようにする
   const body = {
-    prizeId: (prizeId ?? prize_id) ?? "",
-    entryNumber: (entryNumber ?? entry_number) ?? "",
+    prizeId: prizeId ?? prize_id ?? "",
+    entryNumber: entryNumber ?? entry_number ?? "",
     password,
   };
   const res = await api.post("/api/lottery/check", body);

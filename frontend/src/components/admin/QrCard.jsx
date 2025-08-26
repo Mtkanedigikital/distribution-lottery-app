@@ -1,5 +1,3 @@
-
-
 // ============================================================================
 // File: frontend/src/components/admin/QrCard.jsx
 // Version: v0.1_001 (2025-08-21)
@@ -65,11 +63,14 @@ export default function QrCard({ prize }) {
         a.download = `qr_${prize.id}.png`;
         a.click();
       };
-      img.onerror = () => alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
+      img.onerror = () =>
+        alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
       img.src = qrPngDataUrl;
     } catch (e) {
       console.error("downloadQR error:", e);
-      alert("QRのPNG変換に失敗しました（例外）。コンソールを確認してください。");
+      alert(
+        "QRのPNG変換に失敗しました（例外）。コンソールを確認してください。",
+      );
     }
   };
 

@@ -23,7 +23,11 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     // 本番では抑制、開発時のみログ出力
-    if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
+    if (
+      typeof process !== "undefined" &&
+      process.env &&
+      process.env.NODE_ENV !== "production"
+    ) {
       // eslint-disable-next-line no-console
       console.error("[ErrorBoundary]", this.props.scope, error, info);
     }

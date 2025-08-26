@@ -60,7 +60,8 @@ function useQuery() {
 // "2025-08-19 13:00" → t('prizes.publishAt', "2025/08/19 13:00")
 function formatJstDate(str) {
   try {
-    if (!str || typeof str !== "string") return t("prizes.publishAt", str ?? "");
+    if (!str || typeof str !== "string")
+      return t("prizes.publishAt", str ?? "");
     const [datePart, timePartRaw] = str.trim().split(/\s+/);
     const [y, m, d] = datePart.split("-");
     const timePart = (timePartRaw || "").slice(0, 5);
@@ -78,8 +79,8 @@ function utcIsoToJstYmdHm(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     const ms = d.getTime() + 9 * 60 * 60 * 1000; // +09:00
-    const z = new Date(ms).toISOString();       // 例: 2025-08-24T03:00:00.000Z
-    return z.slice(0, 16).replace("T", " ");  // "YYYY-MM-DD HH:mm"
+    const z = new Date(ms).toISOString(); // 例: 2025-08-24T03:00:00.000Z
+    return z.slice(0, 16).replace("T", " "); // "YYYY-MM-DD HH:mm"
   } catch {
     return "";
   }
@@ -123,7 +124,9 @@ export default function Participant() {
       setLoading(true);
       try {
         const list = await getPrizes();
-        const found = Array.isArray(list) ? list.find((x) => x.id === prizeId) : null;
+        const found = Array.isArray(list)
+          ? list.find((x) => x.id === prizeId)
+          : null;
         if (found) setPrize(found);
       } catch (e) {
         setErr(e?.response?.data?.message || e?.message || String(e));
@@ -152,16 +155,17 @@ export default function Participant() {
   if (err) {
     return (
       <div style={WRAP_STYLE}>
-        <div style={ERROR_BOX_STYLE}>{t("common.errorPrefix")}{err}</div>
+        <div style={ERROR_BOX_STYLE}>
+          {t("common.errorPrefix")}
+          {err}
+        </div>
       </div>
     );
   }
 
   return (
     <div style={WRAP_STYLE}>
-      {!prize && (
-        <div style={{ padding: 16 }}>{t("participant.noData")}</div>
-      )}
+      {!prize && <div style={{ padding: 16 }}>{t("participant.noData")}</div>}
       <h2>{t("participant.title", prize?.name || "")}</h2>
       {prize && (
         <div style={{ marginBottom: 12 }}>
@@ -177,7 +181,12 @@ export default function Participant() {
         </div>
       )}
 
-      {err && <div style={ERROR_BOX_STYLE}>{t("common.errorPrefix")}{err}</div>}
+      {err && (
+        <div style={ERROR_BOX_STYLE}>
+          {t("common.errorPrefix")}
+          {err}
+        </div>
+      )}
 
       <form
         onSubmit={onSubmit}
@@ -211,7 +220,12 @@ export default function Participant() {
         </button>
       </form>
 
-      {message && <p style={{ marginTop: 12, fontWeight: 600 }}>{t("participant.resultPrefix")}{message}</p>}
+      {message && (
+        <p style={{ marginTop: 12, fontWeight: 600 }}>
+          {t("participant.resultPrefix")}
+          {message}
+        </p>
+      )}
     </div>
   );
 }

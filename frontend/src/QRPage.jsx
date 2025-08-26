@@ -36,7 +36,8 @@ function fmtHMS(sec) {
 // "2025-08-19 13:00" → t('prizes.publishAt', "2025/08/19 13:00")
 function formatJstDate(str) {
   try {
-    if (!str || typeof str !== "string") return t("prizes.publishAt", str ?? "");
+    if (!str || typeof str !== "string")
+      return t("prizes.publishAt", str ?? "");
     const [datePart, timePartRaw] = str.trim().split(/\s+/);
     const [y, m, d] = (datePart || "").split("-");
     const timePart = (timePartRaw || "").slice(0, 5);
@@ -146,7 +147,13 @@ export default function QRPage() {
   };
 
   if (loading) return <div style={{ padding: 16 }}>{t("common.loading")}</div>;
-  if (error) return <div style={ERROR_BOX_STYLE}>{t("common.errorPrefix")}{error}</div>;
+  if (error)
+    return (
+      <div style={ERROR_BOX_STYLE}>
+        {t("common.errorPrefix")}
+        {error}
+      </div>
+    );
   if (!prize) return <div style={{ padding: 16 }}>{t("qr.noData")}</div>;
 
   return (
@@ -169,7 +176,10 @@ export default function QRPage() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
             {t("qr.notPublished")}
           </div>
-          <div>{t("qr.until")}{remainSec != null ? fmtHMS(remainSec) : "—"}</div>
+          <div>
+            {t("qr.until")}
+            {remainSec != null ? fmtHMS(remainSec) : "—"}
+          </div>
         </div>
       ) : (
         <>
@@ -183,9 +193,7 @@ export default function QRPage() {
               marginBottom: 16,
             }}
           >
-            <div style={{ marginBottom: 8 }}>
-              {t("qr.formIntro")}
-            </div>
+            <div style={{ marginBottom: 8 }}>{t("qr.formIntro")}</div>
 
             <div style={{ display: "grid", gap: 8 }}>
               <input
@@ -238,14 +246,16 @@ export default function QRPage() {
                 background: "#ffffff",
               }}
             >
-              {t("qr.resultPrefix")}{resultMsg}
+              {t("qr.resultPrefix")}
+              {resultMsg}
             </div>
           )}
         </>
       )}
 
       <div style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>
-        {t("qr.prizeIdPrefix")}{prizeId}
+        {t("qr.prizeIdPrefix")}
+        {prizeId}
       </div>
     </div>
   );

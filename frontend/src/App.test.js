@@ -16,9 +16,9 @@ import App from "./App";
 
 test("renders app title", () => {
   render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={["/"]}>
       <App />
-    </MemoryRouter>
+    </MemoryRouter>,
   );
   expect(screen.getByText(/抽選アプリ/)).toBeInTheDocument();
 });

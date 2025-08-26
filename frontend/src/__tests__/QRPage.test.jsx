@@ -32,10 +32,18 @@ jest.mock("../locale", () => ({
   },
 }));
 
-const prize = { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" };
+const prize = {
+  id: "TEST1",
+  name: "テスト賞",
+  result_time_jst: "2099-01-01 00:00",
+};
 
 jest.mock("../api", () => ({
-  getPrizes: jest.fn().mockResolvedValue([{ id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" }]),
+  getPrizes: jest
+    .fn()
+    .mockResolvedValue([
+      { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" },
+    ]),
   checkResult: jest.fn().mockResolvedValue({ result: "OK" }),
 }));
 
@@ -45,7 +53,9 @@ test("renders QR page title", async () => {
   render(
     <MemoryRouter initialEntries={["/p?prizeId=TEST1"]}>
       <QRPage />
-    </MemoryRouter>
+    </MemoryRouter>,
   );
-  expect(await screen.findByText(`${prize.name} の抽選ページ`)).toBeInTheDocument();
+  expect(
+    await screen.findByText(`${prize.name} の抽選ページ`),
+  ).toBeInTheDocument();
 });

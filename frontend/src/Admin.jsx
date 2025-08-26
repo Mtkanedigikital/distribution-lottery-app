@@ -26,9 +26,22 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import QrCard from "./components/admin/QrCard";
 
-import { WRAP_STYLE, CARD_STYLE, INPUT_STYLE, BUTTON_STYLE, ERROR_BOX_STYLE } from "./ui/styles";
+import {
+  WRAP_STYLE,
+  CARD_STYLE,
+  INPUT_STYLE,
+  BUTTON_STYLE,
+  ERROR_BOX_STYLE,
+} from "./ui/styles";
 
-import { getPrizes, ADMIN_KEY_STORAGE, adminCreatePrize, adminPublishNow, adminBulkUpsertEntries, adminUpsertEntry } from "./api";
+import {
+  getPrizes,
+  ADMIN_KEY_STORAGE,
+  adminCreatePrize,
+  adminPublishNow,
+  adminBulkUpsertEntries,
+  adminUpsertEntry,
+} from "./api";
 import { formatJstDate, jstLocalInputValue } from "./utils/datetime";
 import { parseCsv } from "./utils/csv";
 import PublishedBadge from "./components/admin/PublishedBadge";
@@ -39,17 +52,15 @@ import t from "./locale";
 // 未公開優先の保存キー
 const UNPUBLISHED_FIRST_KEY = "distribution-lottery/admin/unpublishedFirst";
 
-
-
 // --- 公開判定（publish_time_utc を優先、無ければ JST表記をフォールバック） ---
 function isPublishedJST(publishUtc, publishJst) {
   if (publishUtc) {
-    const t = Date.parse(publishUtc);           // ISO想定
+    const t = Date.parse(publishUtc); // ISO想定
     if (!Number.isNaN(t)) return t <= Date.now();
   }
   if (publishJst) {
     // "YYYY/MM/DD HH:mm" or "YYYY-MM-DD HH:mm" を JST(+09:00) として比較
-    const s = publishJst.replace(/\//g, '-').replace(' ', 'T') + '+09:00';
+    const s = publishJst.replace(/\//g, "-").replace(" ", "T") + "+09:00";
     const t = Date.parse(s);
     if (!Number.isNaN(t)) return t <= Date.now();
   }
@@ -59,18 +70,23 @@ function isPublishedJST(publishUtc, publishJst) {
 // --- ISO(UTC) → JST 表示 "YYYY/MM/DD HH:mm"（ラベルは付けない）
 function formatJstFromUtc(utcStr) {
   try {
-    if (!utcStr) return '';
+    if (!utcStr) return "";
     const d = new Date(utcStr);
-    if (Number.isNaN(d.getTime())) return '';
+    if (Number.isNaN(d.getTime())) return "";
     return d
-      .toLocaleString('ja-JP', {
-        timeZone: 'Asia/Tokyo',
+      .toLocaleString("ja-JP", {
+        timeZone: "Asia/Tokyo",
         hour12: false,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit',
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
       })
-      .replace(/\u200E/g, '');
-  } catch { return ''; }
+      .replace(/\u200E/g, "");
+  } catch {
+    return "";
+  }
 }
 
 // 参加者数バッジ（各カードのタイトル横に表示）
@@ -86,7 +102,9 @@ function CountBadge({ prizeId }) {
         if (alive) setN(0);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [prizeId]);
   return (
     <span style={{ fontSize: 12, color: "#374151", marginLeft: 8 }}>
@@ -154,7 +172,6 @@ export default function Admin() {
     loadPrizes();
   }, []);
 
-
   // 軽量トースト通知（固定下部）
   const [toast, setToast] = useState(null); // { text, kind }
   const showToast = (text, kind = "info") => {
@@ -172,7 +189,11 @@ export default function Admin() {
       if (!newId || !newName || !newJst)
         throw new Error("ID/名前/公開日時は必須です。");
       const jstStr = newJst.replace("T", " ");
-      await adminCreatePrize({ id: newId.trim(), name: newName.trim(), result_time_jst: jstStr });
+      await adminCreatePrize({
+        id: newId.trim(),
+        name: newName.trim(),
+        result_time_jst: jstStr,
+      });
       setCreateMsg(t("admin.toast.createSuccess"));
       setNewId("");
       setNewName("");
@@ -191,7 +212,10 @@ export default function Admin() {
     try {
       const j = await adminPublishNow(id);
       showToast(
-        t("admin.toast.publishUpdated", formatJstDate(j.jst_view_from_utc).replace("公開日: ", "")),
+        t(
+          "admin.toast.publishUpdated",
+          formatJstDate(j.jst_view_from_utc).replace("公開日: ", ""),
+        ),
         "success",
       );
       await loadPrizes();
@@ -218,7 +242,11 @@ export default function Admin() {
       const rows = parseCsv(text);
       if (rows.length === 0)
         throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
-      const data = await adminBulkUpsertEntries({ prize_id: csvPrizeId, rows, onConflict: conflictPolicy });
+      const data = await adminBulkUpsertEntries({
+        prize_id: csvPrizeId,
+        rows,
+        onConflict: conflictPolicy,
+      });
       setCsvResult(data);
       const summary = `追加:${data.inserted ?? 0} 更新:${data.updated ?? 0} スキップ:${data.skipped ?? 0}`;
       showToast(t("admin.toast.csvResult", summary), "success");
@@ -283,8 +311,14 @@ export default function Admin() {
       return Number.isNaN(t) ? Infinity : t;
     };
     return arr.sort((a, b) => {
-      const ap = isPublishedJST(a.publish_time_utc, a.result_time_jst || a.publish_time_jst);
-      const bp = isPublishedJST(b.publish_time_utc, b.result_time_jst || b.publish_time_jst);
+      const ap = isPublishedJST(
+        a.publish_time_utc,
+        a.result_time_jst || a.publish_time_jst,
+      );
+      const bp = isPublishedJST(
+        b.publish_time_utc,
+        b.result_time_jst || b.publish_time_jst,
+      );
       // 未公開を先に
       if (ap !== bp) return ap ? 1 : -1;
       // 同じ公開状態なら公開予定(または実際の)時刻が近い順
@@ -384,7 +418,9 @@ export default function Admin() {
             </small>
             <div>
               <button type="submit" disabled={creating} style={BUTTON_STYLE}>
-                {creating ? t("admin.button.creating") : t("admin.button.create")}
+                {creating
+                  ? t("admin.button.creating")
+                  : t("admin.button.create")}
               </button>
               {createMsg && (
                 <span style={{ marginLeft: 8, fontSize: 12 }}>{createMsg}</span>
@@ -479,7 +515,10 @@ export default function Admin() {
             </div>
           )}
           {csvResult && csvResult.error && (
-            <div style={{ color: "red" }}>{t("common.errorPrefix")}{csvResult.error}</div>
+            <div style={{ color: "red" }}>
+              {t("common.errorPrefix")}
+              {csvResult.error}
+            </div>
           )}
         </section>
 
@@ -549,7 +588,10 @@ export default function Admin() {
                 const publishAtText = p.publish_time_utc
                   ? `公開日: ${formatJstFromUtc(p.publish_time_utc)}`
                   : formatJstDate(p.result_time_jst);
-                const published = isPublishedJST(p.publish_time_utc, p.result_time_jst || p.publish_time_jst);
+                const published = isPublishedJST(
+                  p.publish_time_utc,
+                  p.result_time_jst || p.publish_time_jst,
+                );
                 return (
                   <li
                     key={p.id}
@@ -572,11 +614,11 @@ export default function Admin() {
                     >
                       <div>
                         <div style={{ fontSize: 16, fontWeight: 600 }}>
-                          <span style={{ fontFamily: "monospace" }}>{p.id}</span>{" "}
+                          <span style={{ fontFamily: "monospace" }}>
+                            {p.id}
+                          </span>{" "}
                           {p.name}
-                          <PublishedBadge
-                            published={published}
-                          />
+                          <PublishedBadge published={published} />
                           <CountBadge prizeId={p.id} />
                         </div>
                         <div>{publishAtText}</div>
@@ -589,7 +631,9 @@ export default function Admin() {
                             flexWrap: "wrap",
                           }}
                         >
-                          <Link to={`/participant?prizeId=${encodeURIComponent(p.id)}`}>
+                          <Link
+                            to={`/participant?prizeId=${encodeURIComponent(p.id)}`}
+                          >
                             {t("admin.link.participantPage")}
                           </Link>
                           <button

@@ -34,23 +34,31 @@ jest.mock("../locale", () => ({
 
 // API をモック
 jest.mock("../api", () => ({
-  getPrizes: jest.fn().mockResolvedValue([
-    { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" },
-  ]),
+  getPrizes: jest
+    .fn()
+    .mockResolvedValue([
+      { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" },
+    ]),
   checkResult: jest.fn().mockResolvedValue({ result: "OK" }),
 }));
 
 import QRPage from "../QRPage";
 
-const prize = { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" };
+const prize = {
+  id: "TEST1",
+  name: "テスト賞",
+  result_time_jst: "2099-01-01 00:00",
+};
 
 test("renders QR page title", async () => {
   render(
     <MemoryRouter initialEntries={["/p?prizeId=TEST1"]}>
       <QRPage />
-    </MemoryRouter>
+    </MemoryRouter>,
   );
-  expect(await screen.findByText(`${prize.name} の抽選ページ`)).toBeInTheDocument();
+  expect(
+    await screen.findByText(`${prize.name} の抽選ページ`),
+  ).toBeInTheDocument();
 });
 
 // ============================================================================
@@ -94,21 +102,29 @@ jest.mock("../locale", () => ({
 
 // API をモック
 jest.mock("../api", () => ({
-  getPrizes: jest.fn().mockResolvedValue([
-    { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" },
-  ]),
+  getPrizes: jest
+    .fn()
+    .mockResolvedValue([
+      { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" },
+    ]),
   checkResult: jest.fn().mockResolvedValue({ result: "OK" }),
 }));
 
 import Participant from "../Participant";
 
-const prize = { id: "TEST1", name: "テスト賞", result_time_jst: "2099-01-01 00:00" };
+const prize = {
+  id: "TEST1",
+  name: "テスト賞",
+  result_time_jst: "2099-01-01 00:00",
+};
 
 test("renders Participant title", async () => {
   render(
     <MemoryRouter initialEntries={["/p?prizeId=TEST1"]}>
       <Participant />
-    </MemoryRouter>
+    </MemoryRouter>,
   );
-  expect(await screen.findByText(`${prize.name} の抽選ページ`)).toBeInTheDocument();
+  expect(
+    await screen.findByText(`${prize.name} の抽選ページ`),
+  ).toBeInTheDocument();
 });

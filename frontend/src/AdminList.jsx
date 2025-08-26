@@ -64,7 +64,7 @@ function isPublishedJST(publishUtc, publishJst) {
     if (!Number.isNaN(t)) return t <= Date.now();
   }
   if (publishJst) {
-    const s = publishJst.replace(/\//g, '-').replace(' ', 'T') + '+09:00';
+    const s = publishJst.replace(/\//g, "-").replace(" ", "T") + "+09:00";
     const t = Date.parse(s);
     if (!Number.isNaN(t)) return t <= Date.now();
   }
@@ -110,7 +110,7 @@ export default function AdminList() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
   const [unpublishedFirst, setUnpublishedFirst] = useState(true);
-  const [counts, setCounts] = useState({});        // { [prizeId]: number }
+  const [counts, setCounts] = useState({}); // { [prizeId]: number }
   const [loadingCounts, setLoadingCounts] = useState({}); // { [prizeId]: boolean }
 
   useEffect(() => {
@@ -216,7 +216,9 @@ export default function AdminList() {
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                 公開日時（JST）
               </th>
-              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>参加者数</th>
+              <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                参加者数
+              </th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>状態</th>
               <th style={{ border: "1px solid #e5e7eb", padding: 8 }}>操作</th>
             </tr>
@@ -225,8 +227,13 @@ export default function AdminList() {
             {sorted.map((it) => {
               const id = it.id ?? it.prizeId; // 旧フィールド名にも一応対応
               const name = it.name ?? it.prizeName;
-              const jst = it.publish_time_utc ? formatJstFromUtc(it.publish_time_utc) : formatJstDate(it.result_time_jst ?? it.resultTimeJST);
-              const published = isPublishedJST(it.publish_time_utc, it.publish_time_jst);
+              const jst = it.publish_time_utc
+                ? formatJstFromUtc(it.publish_time_utc)
+                : formatJstDate(it.result_time_jst ?? it.resultTimeJST);
+              const published = isPublishedJST(
+                it.publish_time_utc,
+                it.publish_time_jst,
+              );
               return (
                 <tr key={id}>
                   <td
@@ -244,7 +251,9 @@ export default function AdminList() {
                   <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                     {jst || "未設定"}
                   </td>
-                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>{loadingCounts[id] ? "…" : `${counts[id] ?? 0}件`}</td>
+                  <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
+                    {loadingCounts[id] ? "…" : `${counts[id] ?? 0}件`}
+                  </td>
                   <td style={{ border: "1px solid #e5e7eb", padding: 8 }}>
                     <PublishedBadge published={published} />
                   </td>
