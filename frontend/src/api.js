@@ -28,7 +28,8 @@ import axios from "axios";
 // ベースURL: 環境変数があれば優先。未指定時は prod=/api/lottery, dev=http://localhost:3001
 const isProd = process.env.NODE_ENV === "production";
 export const API_BASE =
-  process.env.REACT_APP_API_BASE || (isProd ? "/api/lottery" : "http://localhost:3001");
+  process.env.REACT_APP_API_BASE ||
+  (isProd ? "/api/lottery" : "http://localhost:3001");
 
 // 共通 axios インスタンス（10秒タイムアウト）
 const api = axios.create({
