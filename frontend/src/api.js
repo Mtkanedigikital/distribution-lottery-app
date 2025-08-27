@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/api.js
-// Version: v0.1_009 (2025-08-27)
+// Version: v0.1_010 (2025-08-27)
 // ============================================================================
 // Specifications:
 // - axiosインスタンス（baseURL, timeout=10s）
@@ -10,6 +10,7 @@
 // - 管理API小関数（create/publish_now/bulkUpsert/upsert）
 // ============================================================================
 // History (recent only):
+// - 2025-08-27: 参加者チェックAPIを /lottery/check に正式化。REACT_APP_API_BASE=/api 前提に統一
 // - 2025-08-27: /api二重付与を削除し、REACT_APP_API_BASE=/api/lottery に依存するよう統一
 // - 2025-08-24: getEntryCount を三段フォールバック化（/count → /entries?prize_id → /entries/:prizeId）
 // - 2025-08-24: 参加者数取得API getEntryCount(prizeId) を追加
@@ -213,7 +214,7 @@ export async function checkResult({
     entryNumber: entryNumber ?? entry_number ?? "",
     password,
   };
-  const res = await api.post("/check", body);
+  const res = await api.post("/lottery/check", body);
   return res.data;
 }
 
