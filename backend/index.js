@@ -2,7 +2,7 @@ require('dotenv').config();
 
 // ============================================================================
 // File: backend/index.js
-// Version: v0.1_007(2025-08-27)
+// Version: v0.1_008(2025-08-27)
 // ============================================================================
 // Specifications:
 // - ExpressベースのAPIサーバ（/api/prizes, /api/entries, /api/lottery, /api/admin-debug）
@@ -12,6 +12,7 @@ require('dotenv').config();
 // - backend/public を静的配信ルートに変更 + SPAフォールバック（/api/を除外）
 // ============================================================================
 // History (recent only):
+// - 2025-08-27: /api/lottery のマウントと /api/lottery/check の委譲ルートを再点検（起動ログを追加）
 // - 2025-08-27: 静的配信ルートを backend/public に統一、SPAフォールバックを強化（/api 除外）
 // - 2025-08-24: 正式API /api/lottery/check を lotteryRouter('/check') に直委譲するルートを追加
 // - 2025-08-24: 互換ルートを撤去し、正式API（/api/lottery/check）に一本化
@@ -122,7 +123,7 @@ app.use("/api/prizes", prizesRouter);
 app.use("/api/entries", entriesRouter);
 app.use("/api/lottery", lotteryRouter);
 app.use("/api/admin-debug", adminDebug);
-
+console.log("[boot] routes mounted: /api/prizes, /api/entries, /api/lottery, /api/lottery/check alias");
 
 // 7) 起動ログ（ADMIN_SECRET は長さのみ）
 const adminLen = (process.env.ADMIN_SECRET || "").length;
@@ -139,6 +140,7 @@ app.listen(PORT, () => {
 const publicDir = path.join(__dirname, "public");
 const publicIndex = path.join(publicDir, "index.html");
 if (fs.existsSync(publicIndex)) {
+  console.log(`[boot] static dir = ${publicDir}`);
   // 静的ファイルを配信
   app.use(express.static(publicDir));
 
