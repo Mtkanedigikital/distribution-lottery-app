@@ -2,16 +2,17 @@ require('dotenv').config();
 
 // ============================================================================
 // File: backend/index.js
-// Version: v0.1_006(2025-08-24)
+// Version: v0.1_007(2025-08-27)
 // ============================================================================
 // Specifications:
 // - ExpressベースのAPIサーバ（/api/prizes, /api/entries, /api/lottery, /api/admin-debug）
 // - dotenv を最優先で初期化（環境変数を全ミドルウェアで確実に参照）
 // - CORS（FRONTEND_ORIGIN対応, allowedHeadersにx-admin-secret）と JSON ボディ処理
 // - ヘルスチェック: /health, /api/health
-// - frontend/build がある場合のみ静的配信 + SPAフォールバック（/api/を除外）
+// - backend/public を静的配信ルートに変更 + SPAフォールバック（/api/を除外）
 // ============================================================================
 // History (recent only):
+// - 2025-08-27: 静的配信ルートを backend/public に統一、SPAフォールバックを強化（/api 除外）
 // - 2025-08-24: 正式API /api/lottery/check を lotteryRouter('/check') に直委譲するルートを追加
 // - 2025-08-24: 互換ルートを撤去し、正式API（/api/lottery/check）に一本化
 // - 2025-08-24: 互換ルート /api/check → /api/lottery/check を追加
@@ -134,20 +135,19 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Lottery backend (DB) running on port ${PORT}`);
 });
-// 6) フロントエンド（build）配信 & SPA フォールバック（build がある時のみ有効）
-const frontendBuild = path.join(__dirname, "..", "frontend", "build");
-const indexHtml = path.join(frontendBuild, "index.html");
-if (fs.existsSync(indexHtml)) {
-  app.use(express.static(frontendBuild));
-  // SPA フォールバック：正規表現ルートを使わずに /api を除外
-  app.use((req, res, next) => {
-    if (req.method === 'GET' && !req.path.startsWith('/api/')) {
-      return res.sendFile(indexHtml, (err) => {
-        if (err) res.status(500).send(err);
-      });
-    }
-    next();
+// 6) フロントエンド（public）配信 & SPA フォールバック（public/index.html がある時のみ有効）
+const publicDir = path.join(__dirname, "public");
+const publicIndex = path.join(publicDir, "index.html");
+if (fs.existsSync(publicIndex)) {
+  // 静的ファイルを配信
+  app.use(express.static(publicDir));
+
+  // SPA フォールバック：/api を除く GET はすべて index.html を返す
+  app.get(/^\/(?!api)(.*)/, (req, res) => {
+    res.sendFile(publicIndex, (err) => {
+      if (err) res.status(500).send(err);
+    });
   });
 } else {
-  console.warn(`[boot] frontend build not found at ${indexHtml}; skipping static serving.`);
+  console.warn(`[boot] frontend public index not found at ${publicIndex}; skipping static serving.`);
 }
