@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/api.js
-// Version: v0.1_010 (2025-08-27)
+// Version: v0.1_011 (2025-08-27)
 // ============================================================================
 // Specifications:
 // - axiosインスタンス（baseURL, timeout=10s）
@@ -10,6 +10,7 @@
 // - 管理API小関数（create/publish_now/bulkUpsert/upsert）
 // ============================================================================
 // History (recent only):
+// - 2025-08-27: 本番の既定API_BASEを /api/lottery に固定し、/lottery/check → /check に修正（重複回避）
 // - 2025-08-27: 参加者チェックAPIを /lottery/check に正式化。REACT_APP_API_BASE=/api 前提に統一
 // - 2025-08-27: /api二重付与を削除し、REACT_APP_API_BASE=/api/lottery に依存するよう統一
 // - 2025-08-24: getEntryCount を三段フォールバック化（/count → /entries?prize_id → /entries/:prizeId）
@@ -24,13 +25,14 @@
 
 import axios from "axios";
 
-// ベースURL: 環境変数があれば優先、なければ localhost:3001 を既定
+// ベースURL: 環境変数があれば優先。未指定時は prod=/api/lottery, dev=http://localhost:3001
+const isProd = process.env.NODE_ENV === "production";
 export const API_BASE =
-  process.env.REACT_APP_API_BASE || "http://localhost:3001";
+  process.env.REACT_APP_API_BASE || (isProd ? "/api/lottery" : "http://localhost:3001");
 
 // 共通 axios インスタンス（10秒タイムアウト）
 const api = axios.create({
-  baseURL: API_BASE,
+  baseURL: API_BASE.replace(/\/+$/, ""),
   timeout: 10000,
   withCredentials: false,
 });
@@ -214,7 +216,7 @@ export async function checkResult({
     entryNumber: entryNumber ?? entry_number ?? "",
     password,
   };
-  const res = await api.post("/lottery/check", body);
+  const res = await api.post("/check", body);
   return res.data;
 }
 
