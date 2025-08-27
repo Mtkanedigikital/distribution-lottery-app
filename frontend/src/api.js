@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/api.js
-// Version: v0.1_008 (2025-08-24)
+// Version: v0.1_009 (2025-08-27)
 // ============================================================================
 // Specifications:
 // - axiosインスタンス（baseURL, timeout=10s）
@@ -10,6 +10,7 @@
 // - 管理API小関数（create/publish_now/bulkUpsert/upsert）
 // ============================================================================
 // History (recent only):
+// - 2025-08-27: /api二重付与を削除し、REACT_APP_API_BASE=/api/lottery に依存するよう統一
 // - 2025-08-24: getEntryCount を三段フォールバック化（/count → /entries?prize_id → /entries/:prizeId）
 // - 2025-08-24: 参加者数取得API getEntryCount(prizeId) を追加
 // - 2025-08-24: 参加者チェックAPIの送信ペイロードを camelCase に統一
@@ -94,19 +95,19 @@ async function requestWithRetry(fn, { retries = 2, backoff = 400 } = {}) {
 
 // ------- prizes -------
 export async function getPrizes() {
-  const res = await requestWithRetry(() => api.get("/api/prizes"));
+  const res = await requestWithRetry(() => api.get("/prizes"));
   return res.data;
 }
 
 export async function getPrize(id) {
   const res = await requestWithRetry(() =>
-    api.get(`/api/prizes/${encodeURIComponent(id)}`),
+    api.get(`/prizes/${encodeURIComponent(id)}`),
   );
   return res.data;
 }
 
 export async function createPrize(data) {
-  return adminFetch(`/api/prizes`, {
+  return adminFetch(`/prizes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -114,7 +115,7 @@ export async function createPrize(data) {
 }
 
 export async function updatePrize(id, data) {
-  return adminFetch(`/api/prizes/${encodeURIComponent(id)}`, {
+  return adminFetch(`/prizes/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -122,7 +123,7 @@ export async function updatePrize(id, data) {
 }
 
 export async function deletePrize(id) {
-  return adminFetch(`/api/prizes/${encodeURIComponent(id)}`, {
+  return adminFetch(`/prizes/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
@@ -130,13 +131,13 @@ export async function deletePrize(id) {
 // ------- entries -------
 export async function getEntries(prizeId) {
   const res = await requestWithRetry(() =>
-    api.get(`/api/entries/${encodeURIComponent(prizeId)}`),
+    api.get(`/entries/${encodeURIComponent(prizeId)}`),
   );
   return res.data;
 }
 
 export async function createEntry(data) {
-  return adminFetch(`/api/entries`, {
+  return adminFetch(`/entries`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -144,7 +145,7 @@ export async function createEntry(data) {
 }
 
 export async function updateEntry(id, data) {
-  return adminFetch(`/api/entries/${encodeURIComponent(id)}`, {
+  return adminFetch(`/entries/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -152,20 +153,20 @@ export async function updateEntry(id, data) {
 }
 
 export async function deleteEntry(id) {
-  return adminFetch(`/api/entries/${encodeURIComponent(id)}`, {
+  return adminFetch(`/entries/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
 
 // ------- counts -------
 /**
- * 参加者数を返す。優先: /api/entries/count?prize_id=xxx
- * フォールバック: /api/entries?prize_id=xxx の配列長
+ * 参加者数を返す。優先: /entries/count?prize_id=xxx
+ * フォールバック: /entries?prize_id=xxx の配列長
  */
 export async function getEntryCount(prizeId) {
-  // 1) 優先: /api/entries/count?prize_id=xxx
+  // 1) 優先: /entries/count?prize_id=xxx
   try {
-    const res = await api.get(`/api/entries/count`, {
+    const res = await api.get(`/entries/count`, {
       params: { prize_id: prizeId },
     });
     if (typeof res?.data?.count === "number") {
@@ -175,9 +176,9 @@ export async function getEntryCount(prizeId) {
     // フォールバックへ
   }
 
-  // 2) 第1フォールバック: /api/entries?prize_id=xxx の配列長
+  // 2) 第1フォールバック: /entries?prize_id=xxx の配列長
   try {
-    const list = await api.get(`/api/entries`, {
+    const list = await api.get(`/entries`, {
       params: { prize_id: prizeId },
     });
     if (Array.isArray(list.data)) return list.data.length;
@@ -186,9 +187,9 @@ export async function getEntryCount(prizeId) {
     // 次へ
   }
 
-  // 3) 第2フォールバック: /api/entries/:prizeId の配列長
+  // 3) 第2フォールバック: /entries/:prizeId の配列長
   try {
-    const res = await api.get(`/api/entries/${encodeURIComponent(prizeId)}`);
+    const res = await api.get(`/entries/${encodeURIComponent(prizeId)}`);
     if (Array.isArray(res.data)) return res.data.length;
     if (Array.isArray(res.data?.items)) return res.data.items.length;
   } catch (_e) {
@@ -212,14 +213,14 @@ export async function checkResult({
     entryNumber: entryNumber ?? entry_number ?? "",
     password,
   };
-  const res = await api.post("/api/lottery/check", body);
+  const res = await api.post("/check", body);
   return res.data;
 }
 
 // ------- admin helpers -------
 // 賞品作成
 export async function adminCreatePrize({ id, name, result_time_jst }) {
-  return adminFetch(`/api/prizes`, {
+  return adminFetch(`/prizes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, name, result_time_jst }),
@@ -227,13 +228,13 @@ export async function adminCreatePrize({ id, name, result_time_jst }) {
 }
 // すぐ公開
 export async function adminPublishNow(prizeId) {
-  return adminFetch(`/api/prizes/${encodeURIComponent(prizeId)}/publish_now`, {
+  return adminFetch(`/prizes/${encodeURIComponent(prizeId)}/publish_now`, {
     method: "POST",
   });
 }
 // CSV一括投入
 export async function adminBulkUpsertEntries({ prize_id, rows, onConflict }) {
-  return adminFetch(`/api/entries/bulk`, {
+  return adminFetch(`/entries/bulk`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prize_id, rows, onConflict }),
@@ -241,7 +242,7 @@ export async function adminBulkUpsertEntries({ prize_id, rows, onConflict }) {
 }
 // 単票UPSERT
 export async function adminUpsertEntry(body) {
-  return adminFetch(`/api/entries/upsert`, {
+  return adminFetch(`/entries/upsert`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

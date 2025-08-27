@@ -119,7 +119,7 @@ export default function AdminList() {
       setMsg("");
       try {
         // 管理者は全件
-        const r = await axios.get(`${API_BASE}/api/prizes`, {
+        const r = await axios.get(`${API_BASE}/prizes`, {
           headers: { Accept: "application/json" },
         });
         // 現行APIは「配列」を返す想定
