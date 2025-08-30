@@ -1,25 +1,31 @@
 // ============================================================================
 // File: frontend/src/Admin.jsx
-// Version: v0.1_015 (2025-08-24)
 // ============================================================================
-// 仕様:
+// Specifications:
 // - 管理画面（賞品一覧、作成、公開操作、参加者エントリー管理）
 // - CSV一括投入や手動UPSERTによるエントリー管理
 // - QRコード生成とPNG保存
 // ============================================================================
-// 履歴（直近のみ）:
-// - 共通スタイル(ui/styles)を適用し、ローカル定義を削除（ボタン/入力/セクション幅の統一）
-// - CSVの「ファイルを選択」ボタンを他ボタンと同サイズに統一（label + hidden input化）
-// - iOS Safariで日時入力が枠からはみ出す問題を修正（幅を100%・最小幅0・外観調整）
-// - 管理API小関数（api.js）を利用し、adminFetch 直呼びを整理
-// - 日付/CSVユーティリティを utils/ 配下へ分離し、import に切替
-// - PublishedBadge コンポーネントを components/admin/ に分離
-// - QrCard コンポーネントを components/admin/ に分離
-// - Adminのトースト/エラーメッセージを locale 辞書に統一
-// - Adminの固定文言（見出し/ラベル/ボタン）を locale 辞書に統一
-// - 2025-08-23: 参加者ページリンクを /p → /participant に修正
+// History (recent only):
+// - 2025-08-30: ボタンの無効時スタイルを buttonStyle で統一適用
+// - 2025-08-30: ヘッダを公式フォーマットに統一（Specifications/History 見出し、履歴整形）
+// - 2025-08-30: CSV取込ボタンのクリック確認ログ/トーストと状態表示を追加（無反応見えの解消）
+// - 2025-08-30: CSV取込ボタンの未選択ガードを追加、CSV読込時にBOM/改行の正規化を実装
+// - 2025-08-30: CSV一括投入に「CSVを取り込む」ボタンを追加（選択後に明示実行方式へ変更）
+// - 2025-08-30: CSVアップロードを csv_text 送信に統一、CSVフォーマット表示を折りたたみに変更
+// - 2025-08-30: CSVの「サンプルCSVを保存」を折りたたみ（details/summary）で非強調化
 // - 2025-08-24: 公開判定/表示の整合性（publish_time_utc をJST換算、未来は未公開）を修正
 // - 2025-08-24: 賞品カードのタイトル横に参加者数バッジを追加
+// - 2025-08-24: 共通スタイル(ui/styles)を適用し、ローカル定義を削除（ボタン/入力/セクション幅の統一）
+// - 2025-08-23: 参加者ページリンクを /p → /participant に修正
+// - 2025-08-23: CSVの「ファイルを選択」ボタンを他ボタンと同サイズに統一（label + hidden input化）
+// - 2025-08-23: iOS Safariで日時入力が枠からはみ出す問題を修正（幅を100%・最小幅0・外観調整）
+// - 2025-08-22: 管理API小関数（api.js）を利用し、adminFetch 直呼びを整理
+// - 2025-08-22: 日付/CSVユーティリティを utils/ 配下へ分離し、import に切替
+// - 2025-08-22: PublishedBadge コンポーネントを components/admin/ に分離
+// - 2025-08-22: QrCard コンポーネントを components/admin/ に分離
+// - 2025-08-22: Adminのトースト/エラーメッセージを locale 辞書に統一
+// - 2025-08-22: Adminの固定文言（見出し/ラベル/ボタン）を locale 辞書に統一
 // ============================================================================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -32,6 +38,7 @@ import {
   INPUT_STYLE,
   BUTTON_STYLE,
   ERROR_BOX_STYLE,
+  buttonStyle,
 } from "./ui/styles";
 
 import {
@@ -43,7 +50,6 @@ import {
   adminUpsertEntry,
 } from "./api";
 import { formatJstDate, jstLocalInputValue } from "./utils/datetime";
-import { parseCsv } from "./utils/csv";
 import PublishedBadge from "./components/admin/PublishedBadge";
 import { getEntryCount } from "./api";
 
@@ -148,6 +154,7 @@ export default function Admin() {
   const [csvBusy, setCsvBusy] = useState(false);
   const [conflictPolicy, setConflictPolicy] = useState("ignore"); // ignore|upsert
   const [csvFileName, setCsvFileName] = useState("");
+  const [csvText, setCsvText] = useState("");
 
   // 単票 UPSERT（手動）
   const [uPrizeId, setUPrizeId] = useState("");
@@ -224,7 +231,7 @@ export default function Admin() {
     }
   };
 
-  // CSV一括投入（JSONボディ版）
+  // CSV一括投入
   const onCsvSelected = async (file) => {
     setCsvResult(null);
     if (!csvPrizeId) {
@@ -233,18 +240,45 @@ export default function Admin() {
     }
     if (!file) {
       setCsvFileName("");
+      setCsvText("");
       return;
     }
     setCsvFileName(file.name);
+    try {
+      const raw = await file.text();
+      // 正規化: 先頭BOM除去 + 改行CRLF→LF
+      const text = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+      if (!text || !text.trim()) {
+        throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
+      }
+      setCsvText(text);
+      // ここでは実行しない。ユーザーが「CSVを取り込む」ボタンで実行する。
+    } catch (e) {
+      setCsvText("");
+      setCsvResult({ error: e.message });
+    }
+  };
+
+  const runCsvImport = async () => {
+    console.log("runCsvImport:start", {
+      prizeId: csvPrizeId,
+      csvTextLen: (csvText || "").length,
+      conflictPolicy,
+    });
+    showToast("CSV取り込みを開始します…", "info");
+    if (!csvPrizeId) {
+      alert("先に対象の賞品IDを選択してください。");
+      return;
+    }
+    if (!csvText || !csvText.trim()) {
+      alert("CSVファイルを選んでください。");
+      return;
+    }
     setCsvBusy(true);
     try {
-      const text = await file.text();
-      const rows = parseCsv(text);
-      if (rows.length === 0)
-        throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
       const data = await adminBulkUpsertEntries({
-        prize_id: csvPrizeId,
-        rows,
+        prizeId: csvPrizeId,
+        csvText,
         onConflict: conflictPolicy,
       });
       setCsvResult(data);
@@ -417,7 +451,11 @@ export default function Admin() {
               {t("admin.hint.defaultTime")}
             </small>
             <div>
-              <button type="submit" disabled={creating} style={BUTTON_STYLE}>
+              <button
+                type="submit"
+                disabled={creating}
+                style={buttonStyle(creating)}
+              >
                 {creating
                   ? t("admin.button.creating")
                   : t("admin.button.create")}
@@ -477,25 +515,81 @@ export default function Admin() {
             {csvFileName && (
               <span style={{ fontSize: 12, color: "#555" }}>{csvFileName}</span>
             )}
-            <button
-              type="button"
-              onClick={downloadSampleCsv}
-              style={BUTTON_STYLE}
-            >
-              {t("admin.button.downloadSampleCsv")}
-            </button>
-          </div>
-          <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
-            {t("admin.help.csvFormat")}
-            <pre
-              style={{ background: "#f7f7f7", padding: 8, overflowX: "auto" }}
-            >
-              {`entry_number,password,is_winner
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                onClick={runCsvImport}
+                disabled={csvBusy || !csvPrizeId || !csvFileName}
+                style={{
+                  ...buttonStyle(csvBusy || !csvPrizeId || !csvFileName),
+                  pointerEvents: csvBusy ? "none" : "auto",
+                  zIndex: 1,
+                }}
+                title="選択したCSVを取り込む"
+              >
+                {csvBusy ? t("admin.button.sending") : "CSVを取り込む"}
+              </button>
+              <small style={{ color: "#6B7280" }}>
+                状態: prizeId={csvPrizeId ? "✓" : "×"} / CSV=
+                {csvText ? `${csvText.length}B` : "×"} / busy=
+                {csvBusy ? "✓" : "×"}
+              </small>
+            </div>
+            <details style={{ marginLeft: 4 }}>
+              <summary
+                style={{ cursor: "pointer", fontSize: 12, color: "#9CA3AF" }}
+              >
+                その他オプション
+              </summary>
+              <div style={{ marginTop: 6, marginLeft: 8 }}>
+                <button
+                  type="button"
+                  onClick={downloadSampleCsv}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    textDecoration: "underline",
+                    color: "#6B7280",
+                    cursor: "pointer",
+                  }}
+                  title="CSVの雛形を保存"
+                >
+                  {t("admin.button.downloadSampleCsv")}
+                </button>
+                <details
+                  style={{
+                    fontSize: 12,
+                    color: "#555",
+                    lineHeight: 1.6,
+                    marginTop: 8,
+                  }}
+                >
+                  <summary style={{ cursor: "pointer", color: "#9CA3AF" }}>
+                    CSVフォーマット（1行目は必ずヘッダ）
+                  </summary>
+                  <div style={{ marginTop: 6 }}>
+                    <pre
+                      style={{
+                        background: "#f7f7f7",
+                        padding: 8,
+                        overflowX: "auto",
+                      }}
+                    >
+                      {`entry_number,password,is_winner
 001,1111,true
 002,2222,false`}
-            </pre>
+                    </pre>
+                  </div>
+                </details>
+              </div>
+            </details>
           </div>
-          {csvBusy && <div>{t("admin.state.uploading")}</div>}
+          {csvBusy && (
+            <div style={{ fontSize: 12, color: "#555" }}>
+              {t("admin.state.uploading")}
+            </div>
+          )}
           {csvResult && !csvResult.error && (
             <div style={{ fontSize: 13 }}>
               追加: {csvResult.inserted ?? 0} / 更新: {csvResult.updated ?? 0} /
@@ -565,7 +659,7 @@ export default function Admin() {
                 type="button"
                 disabled={uBusy}
                 onClick={upsertEntryManual}
-                style={BUTTON_STYLE}
+                style={buttonStyle(uBusy)}
               >
                 {uBusy ? t("admin.button.sending") : t("admin.button.upsert")}
               </button>

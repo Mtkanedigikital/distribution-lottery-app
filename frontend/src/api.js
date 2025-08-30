@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/api.js
-// Version: v0.1_012 (2025-08-27)
+// Version: v0.1_019 (2025-08-30)
 // ============================================================================
 // Specifications:
 // - axiosインスタンス（baseURL, timeout=10s）
@@ -10,6 +10,11 @@
 // - 管理API小関数（create/publish_now/bulkUpsert/upsert）
 // ============================================================================
 // History (recent only):
+// - 2025-08-30: CSVインポート失敗対策を強化（空CSV/未選択/未指定prize_idのガード、BOM除去・改行統一、Accept追加）。ヘッダと全行を復元。
+// - 2025-08-30: adminBulkUpsertEntries を csv_text / on_conflict に対応（rows も後方互換）、ENVに VITE_API_BASE_URL を追加考慮
+// - 2025-08-30: getEntryCount の優先順を /entries/:prizeId → /entries/count → /entries?prize_id に変更（404回避）
+// - 2025-08-30: API_BASE(prod="")に変更し、全エンドポイントを /api プレフィックスに統一（dev=localhost:3000と両立）
+// - 2025-08-30: 開発用API_BASEの既定を http://localhost:3000 に統一（3001を撤去）
 // - 2025-08-27: prodのAPI_BASEを /api に統一。check は /api/lottery/check に固定（/prizes 404対策）
 // - 2025-08-27: 本番の既定API_BASEを /api/lottery に固定し、/lottery/check → /check に修正（重複回避）
 // - 2025-08-27: 参加者チェックAPIを /lottery/check に正式化。REACT_APP_API_BASE=/api 前提に統一
@@ -26,15 +31,18 @@
 
 import axios from "axios";
 
-// ベースURL: 環境変数があれば優先。未指定時は prod=/api, dev=http://localhost:3001
+// ベースURL: 環境変数があれば優先。未指定時は prod=, dev=http://localhost:3000
 const isProd = process.env.NODE_ENV === "production";
 export const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
   process.env.REACT_APP_API_BASE ||
-  (isProd ? "/api" : "http://localhost:3001");
+  (isProd ? "" : "http://localhost:3000");
 
 // 共通 axios インスタンス（10秒タイムアウト）
 const api = axios.create({
-  baseURL: API_BASE.replace(/\/+$/, ""),
+  baseURL: API_BASE.replace(/\/+$|^$/, ""),
   timeout: 10000,
   withCredentials: false,
 });
@@ -60,6 +68,7 @@ export async function adminFetch(
 ) {
   const adminKey = getAdminSecret();
   const h = {
+    Accept: "application/json",
     ...(headers || {}),
     ...(adminKey ? { "x-admin-secret": adminKey } : {}),
   };
@@ -100,19 +109,19 @@ async function requestWithRetry(fn, { retries = 2, backoff = 400 } = {}) {
 
 // ------- prizes -------
 export async function getPrizes() {
-  const res = await requestWithRetry(() => api.get("/prizes"));
+  const res = await requestWithRetry(() => api.get("/api/prizes"));
   return res.data;
 }
 
 export async function getPrize(id) {
   const res = await requestWithRetry(() =>
-    api.get(`/prizes/${encodeURIComponent(id)}`),
+    api.get(`/api/prizes/${encodeURIComponent(id)}`),
   );
   return res.data;
 }
 
 export async function createPrize(data) {
-  return adminFetch(`/prizes`, {
+  return adminFetch(`/api/prizes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -120,7 +129,7 @@ export async function createPrize(data) {
 }
 
 export async function updatePrize(id, data) {
-  return adminFetch(`/prizes/${encodeURIComponent(id)}`, {
+  return adminFetch(`/api/prizes/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -128,7 +137,7 @@ export async function updatePrize(id, data) {
 }
 
 export async function deletePrize(id) {
-  return adminFetch(`/prizes/${encodeURIComponent(id)}`, {
+  return adminFetch(`/api/prizes/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
@@ -136,13 +145,13 @@ export async function deletePrize(id) {
 // ------- entries -------
 export async function getEntries(prizeId) {
   const res = await requestWithRetry(() =>
-    api.get(`/entries/${encodeURIComponent(prizeId)}`),
+    api.get(`/api/entries/${encodeURIComponent(prizeId)}`),
   );
   return res.data;
 }
 
 export async function createEntry(data) {
-  return adminFetch(`/entries`, {
+  return adminFetch(`/api/entries`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -150,7 +159,7 @@ export async function createEntry(data) {
 }
 
 export async function updateEntry(id, data) {
-  return adminFetch(`/entries/${encodeURIComponent(id)}`, {
+  return adminFetch(`/api/entries/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -158,45 +167,46 @@ export async function updateEntry(id, data) {
 }
 
 export async function deleteEntry(id) {
-  return adminFetch(`/entries/${encodeURIComponent(id)}`, {
+  return adminFetch(`/api/entries/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
 
 // ------- counts -------
 /**
- * 参加者数を返す。優先: /entries/count?prize_id=xxx
- * フォールバック: /entries?prize_id=xxx の配列長
+ * 参加者数を返す。優先: /entries/:prizeId の配列長
+ * フォールバック: /entries/count?prize_id=xxx
+ * さらにフォールバック: /entries?prize_id=xxx の配列長
  */
 export async function getEntryCount(prizeId) {
-  // 1) 優先: /entries/count?prize_id=xxx
+  // 1) 優先: /entries/:prizeId の配列長
   try {
-    const res = await api.get(`/entries/count`, {
+    const res = await api.get(`/api/entries/${encodeURIComponent(prizeId)}`);
+    if (Array.isArray(res.data)) return res.data.length;
+    if (Array.isArray(res.data?.items)) return res.data.items.length;
+  } catch (_e) {
+    // 次へ
+  }
+
+  // 2) 第1フォールバック: /entries/count?prize_id=xxx
+  try {
+    const res = await api.get(`/api/entries/count`, {
       params: { prize_id: prizeId },
     });
     if (typeof res?.data?.count === "number") {
       return res.data.count;
     }
   } catch (_e) {
-    // フォールバックへ
+    // 次へ
   }
 
-  // 2) 第1フォールバック: /entries?prize_id=xxx の配列長
+  // 3) 第2フォールバック: /entries?prize_id=xxx の配列長
   try {
-    const list = await api.get(`/entries`, {
+    const list = await api.get(`/api/entries`, {
       params: { prize_id: prizeId },
     });
     if (Array.isArray(list.data)) return list.data.length;
     if (Array.isArray(list.data?.items)) return list.data.items.length;
-  } catch (_e) {
-    // 次へ
-  }
-
-  // 3) 第2フォールバック: /entries/:prizeId の配列長
-  try {
-    const res = await api.get(`/entries/${encodeURIComponent(prizeId)}`);
-    if (Array.isArray(res.data)) return res.data.length;
-    if (Array.isArray(res.data?.items)) return res.data.items.length;
   } catch (_e) {
     // すべて失敗
   }
@@ -218,14 +228,14 @@ export async function checkResult({
     entryNumber: entryNumber ?? entry_number ?? "",
     password,
   };
-  const res = await api.post("/lottery/check", body);
+  const res = await api.post("/api/lottery/check", body);
   return res.data;
 }
 
 // ------- admin helpers -------
 // 賞品作成
 export async function adminCreatePrize({ id, name, result_time_jst }) {
-  return adminFetch(`/prizes`, {
+  return adminFetch(`/api/prizes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, name, result_time_jst }),
@@ -233,21 +243,55 @@ export async function adminCreatePrize({ id, name, result_time_jst }) {
 }
 // すぐ公開
 export async function adminPublishNow(prizeId) {
-  return adminFetch(`/prizes/${encodeURIComponent(prizeId)}/publish_now`, {
+  return adminFetch(`/api/prizes/${encodeURIComponent(prizeId)}/publish_now`, {
     method: "POST",
   });
 }
-// CSV一括投入
-export async function adminBulkUpsertEntries({ prize_id, rows, onConflict }) {
-  return adminFetch(`/entries/bulk`, {
+/**
+ * CSV一括投入（管理）
+ * - 推奨: { prize_id, csv_text, on_conflict } を渡すと、body={prize_id, csv_text, on_conflict} で送信
+ * - 後方互換: rows を渡した場合は body={prize_id, rows, on_conflict}
+ */
+export async function adminBulkUpsertEntries({
+  prizeId,
+  prize_id,
+  csvText,
+  csv_text,
+  rows,
+  onConflict = "ignore",
+}) {
+  const pid = (prizeId ?? prize_id ?? "").trim();
+  if (!pid) throw new Error("賞品IDが選択されていません。");
+
+  const raw = csvText ?? csv_text;
+  const normalized =
+    typeof raw === "string"
+      ? raw
+          .replace(/^\uFEFF/, "") // BOM除去
+          .replace(/\r\n?|\n/g, "\n")
+          .trim()
+      : "";
+
+  // rows 指定がある場合は優先
+  const body =
+    Array.isArray(rows) && rows.length
+      ? { prize_id: pid, rows, on_conflict: onConflict }
+      : { prize_id: pid, csv_text: normalized, on_conflict: onConflict };
+
+  // 送信前ガード
+  if (!body.rows && !body.csv_text) {
+    throw new Error("CSVが空です。ファイルを選択してください。");
+  }
+
+  return adminFetch(`/api/entries/bulk`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prize_id, rows, onConflict }),
+    body: JSON.stringify(body),
   });
 }
 // 単票UPSERT
 export async function adminUpsertEntry(body) {
-  return adminFetch(`/entries/upsert`, {
+  return adminFetch(`/api/entries/upsert`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

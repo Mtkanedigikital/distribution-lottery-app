@@ -14,7 +14,8 @@
     "react-spinners": "^0.17.0"
   },
   "scripts": {
-    "start": "cross-env PORT=3000 react-scripts start",
+    "dev": "react-scripts start",
+    "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
@@ -38,5 +39,5 @@
     "@testing-library/user-event": "^14.6.1",
     "eslint-plugin-react-hooks": "^4.6.2"
   },
-  "proxy": "http://localhost:3001"
+  "proxy": "http://localhost:3000"
 }

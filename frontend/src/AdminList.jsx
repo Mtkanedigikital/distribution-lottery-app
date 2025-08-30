@@ -1,12 +1,13 @@
 // ============================================================================
 // File: frontend/src/AdminList.jsx
-// Version: v0.2_005 (2025-08-24)
+// Version: v0.2_006 (2025-08-30)
 // ============================================================================
 // Specifications:
 // - 管理用の賞品一覧ページ。API (/api/prizes) から全賞品を取得し、未公開→公開の順に表示
 // - 参加/管理ページURLの表示・コピー、公開状態バッジ、JST整形、並べ替えオプションを提供
 // ============================================================================
 // History (recent only):
+// - 2025-08-30: API_BASE のデフォルトを http://localhost:3000 に統一（開発統一ポート）
 // - API取得と並べ替えロジックの実装
 // - 2025-08-24: 公開時刻の表示を publish_time_utc 基準のJST表示に修正（result_time_jst 参照の誤りを修正）
 // - 2025-08-24: 公開判定を isPublishedJST に変更（publish_time_utc 優先、無い場合は publish_time_jst をJSTとして比較）。バッジ/並べ替えで使用
@@ -19,7 +20,7 @@ import { Link } from "react-router-dom";
 import axios from "axios";
 import { getEntryCount } from "./api";
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3000";
 
 /** "2025-08-19 13:00" → "公開日: 2025/08/19 13:00"（先頭の「公開日: 」はここでは付けない） */
 function formatJstDate(str) {

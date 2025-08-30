@@ -7,3 +7,4 @@ node_modules/
 # OS / Editor files
 .DS_Store
 .vscode/
+/generated/prisma

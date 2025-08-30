@@ -1,6 +1,6 @@
 // ============================================================================
 // File: frontend/src/AdminEdit.jsx
-// Version: v0.1_001 (2025-08-21)
+// Version: v0.1_003 (2025-08-30)
 // ============================================================================
 // 仕様:
 // - URL パラメータから prizeId を取得
@@ -9,12 +9,15 @@
 // - 「参加者ページを開く」ボタンで /participant?prizeId=... を新規タブで開く
 // ============================================================================
 // 履歴（直近のみ）:
+// - 2025-08-30: APIアクセスを環境変数優先＋dev既定3000に統一（3001 の直書きを撤去）
 // - 初版作成
 // ============================================================================
 
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import axios from "axios";
+
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3000";
 
 export default function AdminEdit() {
   const [searchParams] = useSearchParams();
@@ -24,7 +27,7 @@ export default function AdminEdit() {
   useEffect(() => {
     if (prizeId) {
       axios
-        .get(`http://localhost:3001/api/product/${prizeId}`)
+        .get(`${API_BASE}/api/product/${prizeId}`)
         .then((res) => setPrize(res.data));
     }
   }, [prizeId]);

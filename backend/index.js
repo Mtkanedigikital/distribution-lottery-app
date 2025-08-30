@@ -2,7 +2,7 @@ require('dotenv').config();
 
 // ============================================================================
 // File: backend/index.js
-// Version: v0.1_008(2025-08-27)
+// Version: v0.1_009 (2025-08-30)
 // ============================================================================
 // Specifications:
 // - ExpressベースのAPIサーバ（/api/prizes, /api/entries, /api/lottery, /api/admin-debug）
@@ -12,6 +12,8 @@ require('dotenv').config();
 // - backend/public を静的配信ルートに変更 + SPAフォールバック（/api/を除外）
 // ============================================================================
 // History (recent only):
+// - 2025-08-30: CORS を 5173（localhost/127.0.0.1/LAN）に対応、FRONTEND_ORIGIN 併用可
+// - 2025-08-30: PORT のデフォルトを 3000 に変更（.env=3000 と一致）
 // - 2025-08-27: /api/lottery のマウントと /api/lottery/check の委譲ルートを再点検（起動ログを追加）
 // - 2025-08-27: 静的配信ルートを backend/public に統一、SPAフォールバックを強化（/api 除外）
 // - 2025-08-24: 正式API /api/lottery/check を lotteryRouter('/check') に直委譲するルートを追加
@@ -59,7 +61,11 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'http://192.168.40.143:3000',
-  'http://192.168.40.75:3000'
+  'http://192.168.40.75:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://192.168.40.143:5173',
+  'http://192.168.40.75:5173'
 ].filter(Boolean);
 
 const corsOptions = {
@@ -132,7 +138,7 @@ console.log(
 );
 
 // 8) 起動
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Lottery backend (DB) running on port ${PORT}`);
 });

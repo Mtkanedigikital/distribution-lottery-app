@@ -1,5 +1,8 @@
 {
   "devDependencies": {
     "eslint-plugin-react-hooks": "^5.2.0"
+  },
+  "scripts": {
+    "export:memory": "node tools/export-memory.mjs"
   }
 }
