@@ -1,14 +1,17 @@
 // ============================================================================
 // File: frontend/src/ui/styles.js
-// Version: v0.1_002 (2025-08-21)
+// Version: v0.1_004 (2025-08-30)
 // ============================================================================
-// 仕様:
+// Specifications:
 // - Admin / Participant 共通の簡易スタイル定義
 // - モバイル優先（最大幅600px、左寄せ）
 // - 入力・ボタン・カード・レイアウト・エラーボックスのユーティリティ
 // ============================================================================
-// 履歴（直近のみ）:
-// - エラーボックス用スタイルを追加
+// History (recent only):
+// - 2025-08-30: buttonStyle ヘルパーを追加（無効時スタイルの統一適用）
+// - 2025-08-30: CSVアップロードボタンのスタイル調整
+// - 2025-08-30: DISABLED_BUTTON_STYLE を追加
+// - 2025-08-30: エラーボックス用スタイルを追加
 // ============================================================================
 
 export const WRAP_STYLE = {
@@ -54,6 +57,13 @@ export const BUTTON_STYLE = {
   display: "inline-block",
 };
 
+export const DISABLED_BUTTON_STYLE = {
+  opacity: 0.5,
+  cursor: "not-allowed",
+  background: "#9ca3af",
+  border: "1px solid #9ca3af",
+};
+
 export const LINK_BUTTON_STYLE = {
   ...BUTTON_STYLE,
   textDecoration: "none",
@@ -82,3 +92,9 @@ export const ERROR_BOX_STYLE = {
   borderRadius: 8,
   margin: "8px 0",
 };
+
+// 共通: ボタンのスタイルを disabled 状態に応じて合成
+export const buttonStyle = (disabled) => ({
+  ...BUTTON_STYLE,
+  ...(disabled ? DISABLED_BUTTON_STYLE : {}),
+});
