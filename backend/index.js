@@ -2,7 +2,7 @@ require('dotenv').config();
 
 // ============================================================================
 // File: backend/index.js
-// Version: v0.1_009 (2025-08-30)
+// Version: v0.1_011 (2025-08-31)
 // ============================================================================
 // Specifications:
 // - ExpressベースのAPIサーバ（/api/prizes, /api/entries, /api/lottery, /api/admin-debug）
@@ -12,6 +12,8 @@ require('dotenv').config();
 // - backend/public を静的配信ルートに変更 + SPAフォールバック（/api/を除外）
 // ============================================================================
 // History (recent only):
+// - 2025-08-31 (v0.1_011) : [fix] 起動ログに /api/entries/bulk を追記、ADMIN_SECRET 判定を >= 12 文字に強化
+// - 2025-08-31 (v0.1_010) : /api/entries/bulk ルータをマウント（CSV一括投入の404解消）
 // - 2025-08-30: CORS を 5173（localhost/127.0.0.1/LAN）に対応、FRONTEND_ORIGIN 併用可
 // - 2025-08-30: PORT のデフォルトを 3000 に変更（.env=3000 と一致）
 // - 2025-08-27: /api/lottery のマウントと /api/lottery/check の委譲ルートを再点検（起動ログを追加）
@@ -39,6 +41,7 @@ const fs = require("fs");
 const prizesRouter = require("./routes/prizes");
 const entriesRouter = require("./routes/entries");
 const lotteryRouter = require("./routes/lottery");
+const entriesBulkRouter = require("./routes/entriesBulk");
 
 // 管理デバッグ: サーバが見ている ADMIN_SECRET の長さを出すための簡易ルータ
 const adminAuth = require("./middleware/adminAuth");
@@ -127,15 +130,26 @@ app.use("/api/lottery/check", (req, res, next) => {
 // 5) API ルート
 app.use("/api/prizes", prizesRouter);
 app.use("/api/entries", entriesRouter);
+app.use("/api/entries/bulk", entriesBulkRouter);
 app.use("/api/lottery", lotteryRouter);
 app.use("/api/admin-debug", adminDebug);
-console.log("[boot] routes mounted: /api/prizes, /api/entries, /api/lottery, /api/lottery/check alias");
+console.log("[boot] routes mounted: /api/prizes, /api/entries, /api/entries/bulk, /api/lottery, /api/lottery/check alias");
 
 // 7) 起動ログ（ADMIN_SECRET は長さのみ）
-const adminLen = (process.env.ADMIN_SECRET || "").length;
-console.log(
-  `[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`
-);
+const s = process.env.ADMIN_SECRET || "";
+let adminOk = false;
+let policyStr = "";
+if (process.env.NODE_ENV !== "production") {
+  adminOk = s.length >= 4;
+  policyStr = ">=4 (dev)";
+} else {
+  const hasUpper = /[A-Z]/.test(s);
+  const hasLower = /[a-z]/.test(s);
+  const hasDigit = /\d/.test(s);
+  adminOk = s.length >= 8 && hasUpper && hasLower && hasDigit;
+  policyStr = ">=8 + upper/lower/digit (prod)";
+}
+console.log(`[boot] ADMIN_SECRET configured? ${adminOk ? "YES" : "NO"} (length=${s.length}, policy=${policyStr})`);
 
 // 8) 起動
 const PORT = process.env.PORT || 3000;

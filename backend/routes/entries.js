@@ -1,6 +1,6 @@
 // ============================================================================
-// File: routes/entries.js
-// Version: v0.1_017 (2025-08-30)
+// File: backend/routes/entries.js
+// Version: v0.1_022 (2025-08-31)
 // ============================================================================
 // Specifications:
 // - 抽選エントリーのCRUDルート
@@ -9,17 +9,23 @@
 // - PUT /api/entries/upsert で登録または更新
 // ============================================================================
 // History (recent only):
-// - 2025-08-30: POST /api/entries/bulk が csv_text と on_conflict(ignore|upsert) に対応、{inserted,updated,skipped,total} を返す
-// - 2025-08-30: /api/entries/count の戻りを { count: number } に強制（型補正とawait漏れ対策）
-// - 2025-08-30: Prisma失敗時のフォールバックSQLを実装（Entry/entriesテーブル自動判別）
-// - 2025-08-30: エントリー取得APIの orderBy を降順（最新が先頭）に修正
-// - 2025-08-30: GET /api/entries?prize_id と /api/entries/count を追加。/:prizeId の orderBy を entry_number に修正
-// - 2025-08-30: 管理系APIに adminAuth を導入（POST/PUT/BULK は x-admin-secret 必須）
-// - 2025-08-30: 初回実装
+// - 2025-08-31 (v0.1_022): [validate] CSVバリデーションを強化（ヘッダ検証、最大2,000行、entry_number必須/CSV内重複禁止、password方針 dev>=4/ prod>=8+混在、エラー形を {errors:[{row,message}]} に統一）。/bulk 内の prize_id 補填/一致検証も整理
+// - 2025-08-31 (v0.1_021): /bulk に body.prize_id を導入。CSVに prize_id 列が無い場合は補填、有る場合は一致検証。parseCsvToItems は prize_id を任意化
+// - 2025-08-31 (v0.1_020): CSVパースを papaparse に置換（クォート/改行/空行/余分空白対応）、詳細エラー返却を改善
+// - 2025-08-31 (v0.1_019): /api/entries/bulk を csv_text のみ受け付けるよう修正、conflictPolicy対応、詳細エラーハンドリング追加
+// - 2025-08-31 (v0.1_018): CSVのダブルクォート対応／空パスワードは null／カラム不足は警告スキップ
+// - 2025-08-30 (v0.1_017): POST /api/entries/bulk が csv_text と on_conflict(ignore|upsert) に対応、{inserted,updated,skipped,total} を返す
+// - 2025-08-30 (v0.1_016): /api/entries/count の戻りを { count: number } に強制（型補正とawait漏れ対策）
+// - 2025-08-30 (v0.1_015): Prisma失敗時のフォールバックSQLを実装（Entry/entriesテーブル自動判別）
+// - 2025-08-30 (v0.1_014): エントリー取得APIの orderBy を降順（最新が先頭）に修正
+// - 2025-08-30 (v0.1_013): GET /api/entries?prize_id と /api/entries/count を追加。/:prizeId の orderBy を entry_number に修正
+// - 2025-08-30 (v0.1_012): 管理系APIに adminAuth を導入（POST/PUT/BULK は x-admin-secret 必須）
+// - 2025-08-30 (v0.1_011): 初回実装
 // ============================================================================
 
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
+const Papa = require("papaparse");
 const prisma = new PrismaClient();
 
 // 管理者ヘッダ認証（開発・本番共通）
@@ -176,103 +182,212 @@ router.put("/upsert", adminAuth, async (req, res) => {
   }
 });
 
-// CSVテキストを items[] に変換（ヘッダ: entry_number,password,is_winner）
+// CSVテキストを items[] に変換（ヘッダ: prize_id,entry_number,password,is_winner）
+// papaparse でクォート/改行/空行/余分空白を安全に処理
 function parseCsvToItems(csv_text) {
-  if (typeof csv_text !== "string" || !csv_text.trim()) return [];
-  const lines = csv_text
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (lines.length <= 1) return [];
-  const header = lines[0].split(",").map((s) => s.trim());
-  const idxEntry = header.indexOf("entry_number");
-  const idxPass = header.indexOf("password");
-  const idxWin  = header.indexOf("is_winner");
-  if (idxEntry < 0 || idxPass < 0 || idxWin < 0) return [];
-  const items = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(",").map((s) => s.trim());
-    if (!cols.length) continue;
-    const entry_number = cols[idxEntry] ?? "";
-    const password = cols[idxPass] ?? "";
-    const is_winner = /^true$/i.test(String(cols[idxWin] ?? ""));
-    items.push({ entry_number: String(entry_number).trim(), password: String(password), is_winner });
+  const errors = [];
+  const pushErr = (row, message) => {
+    errors.push({ row, message });
+  };
+
+  if (typeof csv_text !== "string" || !csv_text.trim()) {
+    return { items: [], errors: [{ row: 0, message: "Empty or invalid CSV text" }] };
   }
-  return items;
+  // Remove BOM if present
+  csv_text = csv_text.replace(/^\uFEFF/, "");
+
+  const result = Papa.parse(csv_text, {
+    header: true,
+    skipEmptyLines: "greedy",
+    transformHeader: (h) => String(h || "").trim().toLowerCase(),
+    dynamicTyping: false,
+  });
+
+  // papaparse parse errors
+  if (Array.isArray(result.errors) && result.errors.length > 0) {
+    for (const e of result.errors) {
+      const row = (e && typeof e.row === "number") ? (e.row + 1) : 0; // header=1, papaparse gives data row index
+      pushErr(row, e.message || "parse error");
+    }
+  }
+
+  const data = Array.isArray(result.data) ? result.data : [];
+  if (data.length === 0) {
+    if (errors.length === 0) pushErr(0, "CSV must have header and at least one data row");
+    return { items: [], errors };
+  }
+
+  // headers
+  const requiredHeaders = ["entry_number", "password", "is_winner"]; // prize_id is optional
+  const cols = Object.keys(data[0] || {});
+  const missing = requiredHeaders.filter((h) => !cols.includes(h));
+  if (missing.length > 0) {
+    pushErr(1, `Missing header(s): ${missing.join(", ")}`);
+    return { items: [], errors };
+  }
+
+  // row limit
+  const MAX_ROWS = 2000;
+  if (data.length > MAX_ROWS) {
+    pushErr(0, `Too many rows: ${data.length} (max ${MAX_ROWS})`);
+    return { items: [], errors };
+  }
+
+  // password policy (env-aware)
+  const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+  const passwordOK = (pw) => {
+    if (pw === null) return true; // nullable
+    const s = String(pw);
+    if (!isProd) {
+      return s.length >= 4; // dev: >=4 chars
+    }
+    // prod: >=8, lower/upper/digit
+    return s.length >= 8 && /[a-z]/.test(s) && /[A-Z]/.test(s) && /\d/.test(s);
+  };
+
+  const seen = new Set();
+  const items = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i] || {};
+    const rowNumber = i + 2; // header is line 1
+
+    const prize_id_raw = (row.prize_id ?? "");
+    const prize_id = (prize_id_raw === null || prize_id_raw === undefined) ? null : prize_id_raw.toString().trim();
+
+    const entry_number = (row.entry_number ?? "").toString().trim();
+    if (!entry_number) {
+      pushErr(rowNumber, "entry_number is required");
+      continue;
+    }
+    const key = `k:${prize_id || ''}:${entry_number}`; // local-CSV uniqueness (prize別で重複許容しない設計なら prize_id は body 補填後に再確認)
+    if (seen.has(key)) {
+      pushErr(rowNumber, `Duplicate entry_number within CSV: ${entry_number}`);
+      continue;
+    }
+    seen.add(key);
+
+    const passwordRaw = (row.password ?? "").toString();
+    const password = passwordRaw === "" ? null : passwordRaw;
+    if (!passwordOK(password)) {
+      pushErr(rowNumber, isProd ? "password must be >=8 chars and include lower/upper/digit" : "password must be >=4 chars in dev");
+      continue;
+    }
+
+    const isRaw = (row.is_winner ?? "").toString().trim();
+    const is_winner = /^(true|1|yes|y)$/i.test(isRaw);
+
+    items.push({
+      prize_id: prize_id && prize_id.length > 0 ? prize_id : null, // optional; /bulk will fill
+      entry_number,
+      password,
+      is_winner,
+    });
+  }
+
+  return { items, errors };
 }
 
 // POST /api/entries/bulk
 router.post("/bulk", adminAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    let prize_id = body.prize_id ? String(body.prize_id) : "";
-    const on_conflict = (body.on_conflict || "ignore").toString().toLowerCase(); // "ignore" | "upsert"
-
-    // 1) 入力正規化: rows[] / items[] / csv_text いずれかを items[] にする
-    let items = [];
-    if (Array.isArray(body)) {
-      items = body;
-      if (!prize_id && items[0]?.prize_id) prize_id = String(items[0].prize_id);
-    } else if (Array.isArray(body.rows)) {
-      items = body.rows;
-    } else if (Array.isArray(body.items)) {
-      items = body.items;
-    } else if (typeof body.csv_text === "string") {
-      items = parseCsvToItems(body.csv_text);
-    } else {
-      return res.status(400).json({ error: "invalid payload: provide rows[], items[] or csv_text" });
+    const bodyPrizeId = typeof body.prize_id === "string" ? body.prize_id.trim() : (body.prize_id ? String(body.prize_id).trim() : null);
+    if (typeof body.csv_text !== "string") {
+      return res.status(400).json({ error: "csv_text (string) is required in request body" });
     }
+    const conflictPolicyRaw = (body.conflictPolicy || "ignore").toString().toLowerCase();
+    const conflictPolicy = ["ignore", "overwrite", "upsert"].includes(conflictPolicyRaw) ? conflictPolicyRaw : "ignore";
 
-    // prize_id の決定（items 内に prize_id が無ければ必須）
-    if (!prize_id) {
-      const allHave = items.every((r) => r?.prize_id);
-      if (!allHave) {
-        return res.status(400).json({ error: "prize_id required (either top-level or per-row)" });
-      }
+    const { items, errors: parseErrors } = parseCsvToItems(body.csv_text);
+    if (parseErrors.length > 0) {
+      // normalize to objects
+      const norm = parseErrors.map((e) => (typeof e === 'string' ? { row: 0, message: e } : e));
+      return res.status(400).json({ error: "CSV parse error", errors: norm, details: norm });
     }
-
-    // 正規化・フィルタ
-    const toBool = (v) => (typeof v === "boolean" ? v : String(v ?? "").toLowerCase() === "true");
-    items = items
-      .map((r) => ({
-        prize_id: prize_id || String(r.prize_id || ""),
-        entry_number: String(r.entry_number ?? "").trim(),
-        password: r.password != null ? String(r.password) : null,
-        is_winner: toBool(r.is_winner),
-      }))
-      .filter((x) => x.prize_id && x.entry_number);
-
     if (items.length === 0) {
-      return res.status(400).json({ error: "no valid records" });
+      return res.status(400).json({ error: "No valid records found in CSV" });
     }
 
-    // 2) 取り込みロジック（トランザクション）
+    // prize_id の補完／一致検証
+    const csvHasAnyPrizeId = items.some(it => it.prize_id && it.prize_id.length > 0);
+    if (!csvHasAnyPrizeId) {
+      if (!bodyPrizeId) {
+        return res.status(400).json({ error: "prize_id is required either in CSV header or request body" });
+      }
+      // 全行に補填
+      for (const it of items) {
+        it.prize_id = bodyPrizeId;
+      }
+    } else {
+      // CSV 側に prize_id がある場合、body が指定されていれば一致検証
+      if (bodyPrizeId) {
+        const mismatch = items.find(it => (it.prize_id || "").toString().trim() !== bodyPrizeId);
+        if (mismatch) {
+          return res.status(400).json({ error: "prize_id mismatch between CSV and request body" });
+        }
+      }
+      // body 未指定なら CSV の値をそのまま使用
+    }
+
+    // 最終重複チェック（prize_id 確定後に key 再構成）
+    const seenFinal = new Set();
+    const dups = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const key = `${it.prize_id}::${it.entry_number}`;
+      if (seenFinal.has(key)) dups.push({ row: i + 2, message: `Duplicate entry_number for prize_id ${it.prize_id}: ${it.entry_number}` });
+      seenFinal.add(key);
+    }
+    if (dups.length > 0) {
+      return res.status(400).json({ error: 'duplicate in CSV', errors: dups, details: dups });
+    }
+
     let inserted = 0, updated = 0, skipped = 0;
+    const invalidRows = [];
+
     await prisma.$transaction(async (tx) => {
       for (const it of items) {
         const where = { prize_id_entry_number: { prize_id: it.prize_id, entry_number: it.entry_number } };
-        if (on_conflict === "ignore") {
-          const ex = await tx.entry.findUnique({ where });
-          if (ex) { skipped++; continue; }
-          await tx.entry.create({ data: { prize_id: it.prize_id, entry_number: it.entry_number, password: it.password, is_winner: it.is_winner } });
-          inserted++;
-        } else {
-          // upsert
-          const ex = await tx.entry.findUnique({ where });
-          await tx.entry.upsert({
-            where,
-            update: { password: it.password, is_winner: it.is_winner },
-            create: { prize_id: it.prize_id, entry_number: it.entry_number, password: it.password, is_winner: it.is_winner },
-          });
-          if (ex) updated++; else inserted++;
+        try {
+          if (conflictPolicy === "ignore") {
+            const ex = await tx.entry.findUnique({ where });
+            if (ex) { skipped++; continue; }
+            await tx.entry.create({ data: { prize_id: it.prize_id, entry_number: it.entry_number, password: it.password, is_winner: it.is_winner } });
+            inserted++;
+          } else if (conflictPolicy === "overwrite") {
+            const ex = await tx.entry.findUnique({ where });
+            if (ex) {
+              await tx.entry.update({ where, data: { password: it.password, is_winner: it.is_winner } });
+              updated++;
+            } else {
+              await tx.entry.create({ data: { prize_id: it.prize_id, entry_number: it.entry_number, password: it.password, is_winner: it.is_winner } });
+              inserted++;
+            }
+          } else {
+            // upsert
+            const ex = await tx.entry.findUnique({ where });
+            await tx.entry.upsert({
+              where,
+              update: { password: it.password, is_winner: it.is_winner },
+              create: { prize_id: it.prize_id, entry_number: it.entry_number, password: it.password, is_winner: it.is_winner },
+            });
+            if (ex) updated++; else inserted++;
+          }
+        } catch (e) {
+          invalidRows.push({ prize_id: it.prize_id, entry_number: it.entry_number, error: e.message || String(e) });
         }
       }
     });
 
+    if (invalidRows.length > 0) {
+      return res.status(400).json({ error: "Some rows failed to process", errors: invalidRows, invalidRows, inserted, updated, skipped, total: inserted + updated + skipped + invalidRows.length });
+    }
+
     return res.status(200).json({ inserted, updated, skipped, total: inserted + updated + skipped });
   } catch (err) {
     console.error("bulk upsert error:", err);
-    return res.status(500).json({ error: "bulk failed" });
+    return res.status(500).json({ error: "bulk failed", message: err.message || String(err) });
   }
 });
 
