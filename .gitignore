@@ -37,3 +37,6 @@ internal_docs/
 
 # npm artifacts
 .npm*/
+
+# npm artifacts
+.npm*/
