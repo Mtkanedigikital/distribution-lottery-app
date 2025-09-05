@@ -553,9 +553,9 @@ export default function Admin() {
               <button
                 type="button"
                 onClick={runCsvImport}
-                disabled={csvBusy || !csvPrizeId || !csvText}
+                disabled={csvBusy || !csvPrizeId || (csvText ?? "").trim().length === 0}
                 style={{
-                  ...buttonStyle(csvBusy || !csvPrizeId || !csvText),
+                  ...buttonStyle(csvBusy || !csvPrizeId || (csvText ?? "").trim().length === 0),
                   pointerEvents: csvBusy ? "none" : "auto",
                   zIndex: 1,
                 }}
