@@ -1,5 +1,6 @@
 // ============================================================================
 // File: frontend/src/Admin.jsx
+// Version: v0.1_026 (2025-08-31)
 // ============================================================================
 // Specifications:
 // - 管理画面（賞品一覧、作成、公開操作、参加者エントリー管理）
@@ -7,25 +8,28 @@
 // - QRコード生成とPNG保存
 // ============================================================================
 // History (recent only):
-// - 2025-08-30: ボタンの無効時スタイルを buttonStyle で統一適用
-// - 2025-08-30: ヘッダを公式フォーマットに統一（Specifications/History 見出し、履歴整形）
-// - 2025-08-30: CSV取込ボタンのクリック確認ログ/トーストと状態表示を追加（無反応見えの解消）
-// - 2025-08-30: CSV取込ボタンの未選択ガードを追加、CSV読込時にBOM/改行の正規化を実装
-// - 2025-08-30: CSV一括投入に「CSVを取り込む」ボタンを追加（選択後に明示実行方式へ変更）
-// - 2025-08-30: CSVアップロードを csv_text 送信に統一、CSVフォーマット表示を折りたたみに変更
-// - 2025-08-30: CSVの「サンプルCSVを保存」を折りたたみ（details/summary）で非強調化
-// - 2025-08-24: 公開判定/表示の整合性（publish_time_utc をJST換算、未来は未公開）を修正
-// - 2025-08-24: 賞品カードのタイトル横に参加者数バッジを追加
-// - 2025-08-24: 共通スタイル(ui/styles)を適用し、ローカル定義を削除（ボタン/入力/セクション幅の統一）
-// - 2025-08-23: 参加者ページリンクを /p → /participant に修正
-// - 2025-08-23: CSVの「ファイルを選択」ボタンを他ボタンと同サイズに統一（label + hidden input化）
-// - 2025-08-23: iOS Safariで日時入力が枠からはみ出す問題を修正（幅を100%・最小幅0・外観調整）
-// - 2025-08-22: 管理API小関数（api.js）を利用し、adminFetch 直呼びを整理
-// - 2025-08-22: 日付/CSVユーティリティを utils/ 配下へ分離し、import に切替
-// - 2025-08-22: PublishedBadge コンポーネントを components/admin/ に分離
-// - 2025-08-22: QrCard コンポーネントを components/admin/ に分離
-// - 2025-08-22: Adminのトースト/エラーメッセージを locale 辞書に統一
-// - 2025-08-22: Adminの固定文言（見出し/ラベル/ボタン）を locale 辞書に統一
+// - 2025-08-31 (v0.1_026) : [fix] validateCsv import と呼び出しを削除し、utils/csv の export と整合
+// - 2025-08-31 (v0.1_025) : fix: import重複解消（getEntryCount を統合）／ヘッダ履歴更新
+// - 2025-08-31 (v0.1_024) : publishNow ボタンを buttonStyle に統一／履歴の書式ルールを適用
+// - 2025-08-30 (v0.1_023) : ボタンの無効時スタイルを buttonStyle で統一適用
+// - 2025-08-30 (v0.1_023) : ヘッダを公式フォーマットに統一（Specifications/History 見出し、履歴整形）
+// - 2025-08-30 (v0.1_023) : CSV取込ボタンのクリック確認ログ/トーストと状態表示を追加（無反応見えの解消）
+// - 2025-08-30 (v0.1_023) : CSV取込ボタンの未選択ガードを追加、CSV読込時にBOM/改行の正規化を実装
+// - 2025-08-30 (v0.1_023) : CSV一括投入に「CSVを取り込む」ボタンを追加（選択後に明示実行方式へ変更）
+// - 2025-08-30 (v0.1_023) : CSVアップロードを csv_text 送信に統一、CSVフォーマット表示を折りたたみに変更
+// - 2025-08-30 (v0.1_023) : CSVの「サンプルCSVを保存」を折りたたみ（details/summary）で非強調化
+// - 2025-08-24 (v0.1_022) : 公開判定/表示の整合性（publish_time_utc をJST換算、未来は未公開）を修正
+// - 2025-08-24 (v0.1_022) : 賞品カードのタイトル横に参加者数バッジを追加
+// - 2025-08-24 (v0.1_022) : 共通スタイル(ui/styles)を適用し、ローカル定義を削除（ボタン/入力/セクション幅の統一）
+// - 2025-08-23 (v0.1_021) : 参加者ページリンクを /p → /participant に修正
+// - 2025-08-23 (v0.1_021) : CSVの「ファイルを選択」ボタンを他ボタンと同サイズに統一（label + hidden input化）
+// - 2025-08-23 (v0.1_021) : iOS Safariで日時入力が枠からはみ出す問題を修正（幅を100%・最小幅0・外観調整）
+// - 2025-08-22 (v0.1_020) : 管理API小関数（api.js）を利用し、adminFetch 直呼びを整理
+// - 2025-08-22 (v0.1_020) : 日付/CSVユーティリティを utils/ 配下へ分離し、import に切替
+// - 2025-08-22 (v0.1_020) : PublishedBadge コンポーネントを components/admin/ に分離
+// - 2025-08-22 (v0.1_020) : QrCard コンポーネントを components/admin/ に分離
+// - 2025-08-22 (v0.1_020) : Adminのトースト/エラーメッセージを locale 辞書に統一
+// - 2025-08-22 (v0.1_020) : Adminの固定文言（見出し/ラベル/ボタン）を locale 辞書に統一
 // ============================================================================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -36,7 +40,6 @@ import {
   WRAP_STYLE,
   CARD_STYLE,
   INPUT_STYLE,
-  BUTTON_STYLE,
   ERROR_BOX_STYLE,
   buttonStyle,
 } from "./ui/styles";
@@ -48,10 +51,11 @@ import {
   adminPublishNow,
   adminBulkUpsertEntries,
   adminUpsertEntry,
+  getEntryCount,
 } from "./api";
 import { formatJstDate, jstLocalInputValue } from "./utils/datetime";
+import { evaluateCsv } from "./utils/csv";
 import PublishedBadge from "./components/admin/PublishedBadge";
-import { getEntryCount } from "./api";
 
 import t from "./locale";
 
@@ -272,6 +276,36 @@ export default function Admin() {
     }
     if (!csvText || !csvText.trim()) {
       alert("CSVファイルを選んでください。");
+      return;
+    }
+    // --- 事前バリデーション（フロント側で“投げずに返す”） ---
+    try {
+      const { report, summary } = evaluateCsv(csvText);
+      if (!summary.ok) {
+        // エラーがある場合はサーバ送信を止め、件数をトースト表示
+        setCsvResult({
+          error: "CSVにエラーがあります。修正してから再実行してください。",
+          localReport: report,
+          localSummary: summary,
+        });
+        showToast(
+          `CSVにエラー: rows=${summary.counts.rows}, errors=${summary.counts.errors}, warns=${summary.counts.warns}, dup=${summary.counts.dup}`,
+          "error",
+        );
+        return;
+      } else {
+        // 警告（余剰ヘッダや重複など）は通知のみで続行
+        showToast(
+          `検証OK: rows=${summary.counts.rows}, warns=${summary.counts.warns}, dup=${summary.counts.dup}`,
+          summary.counts.warns > 0 ? "info" : "success",
+        );
+        // 参考として結果を残す（サーバ応答で上書きされる）
+        setCsvResult({ localReport: report, localSummary: summary });
+      }
+    } catch (e) {
+      // 予期せぬパース例外は従来どおりエラー扱い
+      setCsvResult({ error: String(e?.message || e) });
+      showToast(t("admin.toast.csvFail"), "error");
       return;
     }
     setCsvBusy(true);
@@ -519,13 +553,13 @@ export default function Admin() {
               <button
                 type="button"
                 onClick={runCsvImport}
-                disabled={csvBusy || !csvPrizeId || !csvFileName}
+                disabled={csvBusy || !csvPrizeId || !csvText}
                 style={{
-                  ...buttonStyle(csvBusy || !csvPrizeId || !csvFileName),
+                  ...buttonStyle(csvBusy || !csvPrizeId || !csvText),
                   pointerEvents: csvBusy ? "none" : "auto",
                   zIndex: 1,
                 }}
-                title="選択したCSVを取り込む"
+                title="CSV取り込みを開始します…"
               >
                 {csvBusy ? t("admin.button.sending") : "CSVを取り込む"}
               </button>
@@ -613,6 +647,43 @@ export default function Admin() {
               {t("common.errorPrefix")}
               {csvResult.error}
             </div>
+          )}
+          {csvResult?.localReport && (
+            <details style={{ marginTop: 8 }}>
+              <summary>クライアント検証結果</summary>
+              <div style={{ fontSize: 13 }}>
+                行数: {csvResult.localSummary?.counts?.rows ?? 0} / エラー: {csvResult.localSummary?.counts?.errors ?? 0} / 警告: {csvResult.localSummary?.counts?.warns ?? 0} / 重複: {csvResult.localSummary?.counts?.dup ?? 0}
+                {(csvResult.localReport.bodyIssues?.length > 0 || csvResult.localReport.duplicates?.length > 0) && (
+                  <div style={{ marginTop: 6 }}>
+                    {csvResult.localReport.bodyIssues?.length > 0 && (
+                      <details>
+                        <summary>入力エラー（{csvResult.localReport.bodyIssues.length}件）</summary>
+                        <ul>
+                          {csvResult.localReport.bodyIssues.map((it, i) => (
+                            <li key={i}>
+                              行 {it.line}: {it.field} - {it.type}
+                              {it.detail ? `（${it.detail}）` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                    {csvResult.localReport.duplicates?.length > 0 && (
+                      <details>
+                        <summary>重複（{csvResult.localReport.duplicates.length}件）</summary>
+                        <ul>
+                          {csvResult.localReport.duplicates.map((d, i) => (
+                            <li key={i}>
+                              行 {d.line}: entry_number={d.entry_number}（最初の出現: 行{d.firstLine}）
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </div>
+            </details>
           )}
         </section>
 
@@ -733,7 +804,7 @@ export default function Admin() {
                           <button
                             type="button"
                             onClick={() => publishNow(p.id)}
-                            style={BUTTON_STYLE}
+                            style={buttonStyle(false)}
                           >
                             {t("admin.button.publishNow")}
                           </button>
