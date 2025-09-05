@@ -1,8 +1,10 @@
 {
   "devDependencies": {
-    "eslint-plugin-react-hooks": "^5.2.0"
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "husky": "^9.1.7"
   },
   "scripts": {
-    "export:memory": "node tools/export-memory.mjs"
+    "export:memory": "node tools/export-memory.mjs",
+    "prepare": "husky install"
   }
 }

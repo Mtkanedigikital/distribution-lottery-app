@@ -8,9 +8,9 @@
     "start": "node index.js",
     "dev": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "update:headers": "node tools/update-headers.mjs",
-    "update:headers:all": "node tools/update-headers.mjs --all",
-    "update:headers:bump": "node tools/update-headers.mjs --bump"
+    "update:headers": "node ../tools/update-headers.mjs",
+    "update:headers:all": "node ../tools/update-headers.mjs --all",
+    "update:headers:bump": "node ../tools/update-headers.mjs --bump"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
+    "papaparse": "^5.5.3",
     "pg": "^8.16.3"
   }
 }
