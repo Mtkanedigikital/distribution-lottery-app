@@ -1,0 +1,5000 @@
+    "prize_id": "B9000",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 9,
+    "prize_id": "B9000",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 即公開（1分過去へ）
+UPDATE 1
+# 当選チェック（001/1111）
+{"result":"🎉 おめでとうございます！「本番前リハーサル」に当選しました！"}# 落選チェック（002/2222）
+{"result":"残念ながら「本番前リハーサル」には当選しませんでした。"}%  
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+はい、**OK**です！🎉
+
+ログの要点：
+- `{"error":"Duplicate id"} HTTP 409` … 賞品B9000は**既に作成済み**なので再作成で409は想定どおり。
+- `{"error":"Entry already exists ..."} HTTP 409` … エントリー001/002も**既に登録済み**のため409は想定どおり。
+- `GET /api/entries/B9000` の一覧には 001=当選 / 002=落選 が**正しく存在**。
+- `UPDATE 1` … 公開時刻を**即時公開(過去1分)**に更新できている。
+- 当選チェック→🎉メッセージ、落選チェック→落選メッセージ … **期待どおりの判定**。
+
+つまり、**重複は409で弾かれつつデータは維持**、公開反映・当落判定まで一連の流れが正常動作しています。
+
+このあとやるなら：
+- 新規ケースで試す→ `prizeId` を別IDにして同じ手順を実行（409が出ないことを確認）
+- フロントからの動線確認→ `/admin` でQR保存 → `/p?prizeId=B9000` で実機入力チェック
+
+必要なら、**“存在すれば更新/なければ作成” の upsert API**も用意できます。
+
+---
+
+user:
+“存在すれば更新/なければ作成” の upsert API
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解。**“存在すれば更新 / なければ作成 (upsert)”** を追加した、**置き換え用**のルーターを用意しました。  
+`backend/routes/prizes.js` と `backend/routes/entries.js` を**丸ごと差し替え**てください。
+
+---
+
+# backend/routes/prizes.js（置き換え）
+
+```js
+// backend/routes/prizes.js
+// 賞品API: 一覧/取得/作成/更新/UPSERT（存在すれば更新、無ければ作成）
+
+const express = require("express");
+const router = express.Router();
+
+const pool = require("../db");
+const { jstToUtcIso, utcDateToJstText } = require("../time");
+const adminAuth = require("../middleware/adminAuth");
+const audit = require("../auditLogger");
+
+// 共通: DBのprize行をAPIレスポンス形に変換
+function shapePrizeRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    result_time_jst: row.result_time_jst,        // 入力の生JST
+    publish_time_utc: row.publish_time_utc,      // DB基準のUTC
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    jst_view_from_utc: row.publish_time_utc
+      ? utcDateToJstText(new Date(row.publish_time_utc))
+      : null,
+  };
+}
+
+// 一覧
+router.get("/", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, name, result_time_jst, publish_time_utc, created_at, updated_at FROM prizes ORDER BY created_at ASC"
+    );
+    res.json(rows.map(shapePrizeRow));
+  } catch (e) {
+    console.error("GET /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+// 取得
+router.get("/:id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, name, result_time_jst, publish_time_utc, created_at, updated_at FROM prizes WHERE id=$1",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Not found" });
+    res.json(shapePrizeRow(rows[0]));
+  } catch (e) {
+    console.error("GET /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+// 作成（重複は409）
+router.post("/", adminAuth, async (req, res) => {
+  try {
+    const { id, name, result_time_jst } = req.body || {};
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({ error: "id, name, result_time_jst are required" });
+    }
+
+    const publishUTC = jstToUtcIso(result_time_jst); // JST→UTC
+    const q =
+      "INSERT INTO prizes (id, name, result_time_jst, publish_time_utc) VALUES ($1,$2,$3,$4) RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at";
+    const { rows } = await pool.query(q, [id, name, result_time_jst, publishUTC]);
+
+    audit.log("prize.create", { id, name, result_time_jst, publishUTC });
+    return res.status(201).json(shapePrizeRow(rows[0]));
+  } catch (e) {
+    // 重複キー
+    if (e && e.code === "23505") {
+      return res.status(409).json({ error: "Duplicate id" });
+    }
+    console.error("POST /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to create prize" });
+  }
+});
+
+// 更新（存在前提）
+router.patch("/:id", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, result_time_jst } = req.body || {};
+    if (!name && !result_time_jst) {
+      return res.status(400).json({ error: "At least one of name or result_time_jst is required" });
+    }
+    const updates = [];
+    const params = [];
+    let p = 1;
+
+    if (name) {
+      updates.push(`name=$${p++}`);
+      params.push(name);
+    }
+    if (result_time_jst) {
+      updates.push(`result_time_jst=$${p++}`);
+      params.push(result_time_jst);
+      updates.push(`publish_time_utc=$${p++}`);
+      params.push(jstToUtcIso(result_time_jst));
+    }
+
+    params.push(id);
+    const q = `UPDATE prizes SET ${updates.join(", ")}, updated_at=NOW() WHERE id=$${p} RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at`;
+    const { rows } = await pool.query(q, params);
+    if (!rows[0]) return res.status(404).json({ error: "Not found" });
+
+    audit.log("prize.update", { id, name, result_time_jst });
+    res.json(shapePrizeRow(rows[0]));
+  } catch (e) {
+    console.error("PATCH /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to update prize" });
+  }
+});
+
+// ★ UPSERT（存在すれば更新・無ければ作成）
+router.put("/:id", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, result_time_jst } = req.body || {};
+    if (!name || !result_time_jst) {
+      return res.status(400).json({ error: "name and result_time_jst are required" });
+    }
+    const publishUTC = jstToUtcIso(result_time_jst);
+
+    // ON CONFLICT(id) DO UPDATE
+    const q = `
+      INSERT INTO prizes (id, name, result_time_jst, publish_time_utc)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (id)
+      DO UPDATE SET
+        name = EXCLUDED.name,
+        result_time_jst = EXCLUDED.result_time_jst,
+        publish_time_utc = EXCLUDED.publish_time_utc,
+        updated_at = NOW()
+      RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at
+    `;
+    const { rows } = await pool.query(q, [id, name, result_time_jst, publishUTC]);
+
+    // どちらでも同じイベント名で記録（区別したければ insert/update を分岐してもOK）
+    audit.log("prize.upsert", { id, name, result_time_jst, publishUTC });
+    res.json(shapePrizeRow(rows[0]));
+  } catch (e) {
+    console.error("PUT /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to upsert prize" });
+  }
+});
+
+module.exports = router;
+```
+
+---
+
+# backend/routes/entries.js（置き換え）
+
+```js
+// backend/routes/entries.js
+// 参加者エントリーAPI: 一覧/作成/UPSERT（存在すれば更新、無ければ作成）
+
+const express = require("express");
+const router = express.Router();
+
+const pool = require("../db");
+const adminAuth = require("../middleware/adminAuth");
+const audit = require("../auditLogger");
+
+// 一覧（特定賞品）
+router.get("/:prizeId", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, prize_id, entry_number, is_winner FROM entries WHERE prize_id=$1 ORDER BY id ASC",
+      [req.params.prizeId]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/entries/:prizeId error:", e);
+    res.status(500).json({ error: "Failed to fetch entries" });
+  }
+});
+
+// 作成（重複は409）
+router.post("/", adminAuth, async (req, res) => {
+  try {
+    const { prize_id, entry_number, password, is_winner } = req.body || {};
+    if (!prize_id || !entry_number || !password || typeof is_winner !== "boolean") {
+      return res.status(400).json({ error: "prize_id, entry_number, password, is_winner are required" });
+    }
+
+    const q = `
+      INSERT INTO entries (prize_id, entry_number, password, is_winner)
+      VALUES ($1,$2,$3,$4)
+      RETURNING id, prize_id, entry_number, is_winner
+    `;
+    const { rows } = await pool.query(q, [prize_id, entry_number, password, is_winner]);
+
+    audit.log("entry.create", { prize_id, entry_number, is_winner });
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    if (e && e.code === "23505") {
+      // unique constraint (prize_id, entry_number)
+      return res.status(409).json({ error: "Entry already exists for this prize_id and entry_number" });
+    }
+    console.error("POST /api/entries error:", e);
+    res.status(500).json({ error: "Failed to create entry" });
+  }
+});
+
+// ★ UPSERT（存在すれば更新・無ければ作成）
+router.put("/upsert", adminAuth, async (req, res) => {
+  try {
+    const { prize_id, entry_number, password, is_winner } = req.body || {};
+    if (!prize_id || !entry_number || !password || typeof is_winner !== "boolean") {
+      return res.status(400).json({ error: "prize_id, entry_number, password, is_winner are required" });
+    }
+
+    // ON CONFLICT (prize_id, entry_number) DO UPDATE
+    const q = `
+      INSERT INTO entries (prize_id, entry_number, password, is_winner)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (prize_id, entry_number)
+      DO UPDATE SET
+        password = EXCLUDED.password,
+        is_winner = EXCLUDED.is_winner
+      RETURNING id, prize_id, entry_number, is_winner
+    `;
+    const { rows } = await pool.query(q, [prize_id, entry_number, password, is_winner]);
+
+    audit.log("entry.upsert", { prize_id, entry_number, is_winner });
+    res.json(rows[0]);
+  } catch (e) {
+    console.error("PUT /api/entries/upsert error:", e);
+    res.status(500).json({ error: "Failed to upsert entry" });
+  }
+});
+
+module.exports = router;
+```
+
+---
+
+## 動作チェック（そのままコピペOK）
+
+```bash
+echo "# 0) 管理シークレットを backend/.env から読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 1) 賞品 UPSERT（B9001が無ければ作成、あれば更新）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/prizes/B9001 \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"name":"アップサート動作確認","result_time_jst":"2025-08-30 12:34"}'
+
+echo "# 2) 賞品 取得で確認"
+curl -sS http://localhost:3001/api/prizes/B9001 | jq . || curl -sS http://localhost:3001/api/prizes/B9001
+
+echo "# 3) 参加者 UPSERT（001=当選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+
+echo "# 4) 参加者 UPSERT（002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 5) 参加者一覧で確認"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 6) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '\''1 minute'\'', updated_at=NOW() WHERE id='\''B9001'\'';"
+
+echo "# 7) 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}'
+
+echo "# 8) 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}'
+```
+
+---
+
+## 補足
+- どちらの upsert も **PostgreSQL の `ON CONFLICT DO UPDATE`** を使っています（既存のユニーク制約 `prizes.id` と `entries(prize_id, entry_number)` を前提）。
+- すべての **管理系エンドポイントは `x-admin-secret` ヘッダ必須**（`adminAuth` ミドルウェア）。
+- 監査フック（`auditLogger.log`）は `prize.upsert` / `entry.upsert` で呼んでいます。ログの保存先は後で差し替え可能です。
+
+---
+
+user:
+なんかおかしい？
+
+m-aoki@MacBook-Pro-20240703 backend % >....                                
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+
+echo "# 4) 参加者 UPSERT（002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 5) 参加者一覧で確認"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 6) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '\''1 minute'\'', updated_at=NOW() WHERE id='\''B9001'\'';"
+
+echo "# 7) 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}'
+
+echo "# 8) 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}'
+# 0) 管理シークレットを backend/.env から読み込む（値は表示しない）
+# 1) 賞品 UPSERT（B9001が無ければ作成、あれば更新）
+{"error":"Not found"}
+HTTP 404
+# 2) 賞品 取得で確認
+{
+  "error": "Not found"
+}
+# 3) 参加者 UPSERT（001=当選）
+{"error":"Failed to update entry"}
+HTTP 500
+# 4) 参加者 UPSERT（002=落選）
+{"error":"Failed to update entry"}
+HTTP 500
+# 5) 参加者一覧で確認
+[]
+# 6) 即公開（1分過去へ）
+ERROR:  syntax error at or near "\"
+LINE 1: ... publish_time_utc = NOW() - interval '\''1 minute'\'', updat...
+                                                             ^
+# 7) 当選チェック（001/1111）
+{"result":"賞品が見つかりません。"}# 8) 落選チェック（002/2222）
+{"result":"賞品が見つかりません。"}%
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+はい、2点おかしいところがあります。サクッと直せるので、下のコ
+
+---
+
+user:
+バックエンド再起動したほうがいいね
+
+---
+
+system:
+
+
+---
+
+assistant:
+はい、再起動したほうが良いです 👍  
+
+---
+
+### 理由
+- 直前のログに  
+  ```
+  PUT /api/entries/:id error: invalid input syntax for type integer: "upsert"
+  ```
+  というエラーが出ています。これは **`PUT /api/entries/:id` が本来整数IDを期待しているのに、`upsert` という文字列を渡してしまっている** ためです。  
+- コードを修正して **`PUT /api/entries/upsert` という専用ルート** を追加した場合でも、古いプロセスが動いたままでは反映されません。  
+
+---
+
+### 再起動の手順
+1. **今の 3001 番ポートで動いているプロセスを止める**
+   ```bash
+   lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+   ```
+
+2. **バックエンドを再起動**
+   ```bash
+   cd ~/Downloads/distribution-lottery-app/backend
+   PORT=3001 node index.js
+   ```
+   ログに
+   ```
+   [boot] ADMIN_SECRET configured? YES (length=64)
+   Lottery backend (DB) running on port 3001
+   ```
+   が出ればOKです。  
+
+---
+
+### 確認
+- その後に `PUT /api/entries/upsert` を叩けば、`id` を整数として解釈しなくなり、意図通りの **UPSERT 処理** が走るはずです。  
+
+---
+
+👉 まず再起動して、`/api/entries/upsert` が正しくルーティングされるか確認してみませんか？
+
+---
+
+user:
+どう？
+
+m-aoki@MacBook-Pro-20240703 backend % >....                                
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+
+echo "# 4) 参加者 UPSERT（002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 5) 参加者一覧で確認"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 6) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '\''1 minute'\'', updated_at=NOW() WHERE id='\''B9001'\'';"
+
+echo "# 7) 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}'
+
+echo "# 8) 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}'
+# 0) 管理シークレットを backend/.env から読み込む（値は表示しない）
+# 1) 賞品 UPSERT（B9001が無ければ作成、あれば更新）
+{"error":"Failed to upsert prize"}
+HTTP 500
+# 2) 賞品 取得で確認
+{
+  "id": "B9001",
+  "name": "アップサート動作確認",
+  "result_time_jst": "2025-08-30 12:34",
+  "publish_time_utc": "2025-08-30T03:34:00.000Z",
+  "created_at": "2025-08-19T05:51:50.542Z",
+  "updated_at": "2025-08-19T05:51:50.542Z",
+  "jst_view_from_utc": "2025-08-30 12:34"
+}
+# 3) 参加者 UPSERT（001=当選）
+{"error":"Failed to upsert entry"}
+HTTP 500
+# 4) 参加者 UPSERT（002=落選）
+{"error":"Failed to upsert entry"}
+HTTP 500
+# 5) 参加者一覧で確認
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 6) 即公開（1分過去へ）
+ERROR:  syntax error at or near "\"
+LINE 1: ... publish_time_utc = NOW() - interval '\''1 minute'\'', updat...
+                                                             ^
+# 7) 当選チェック（001/1111）
+{"result":"まだ結果発表前です。公開時刻をお待ちください。"}# 8) 落選チェック（002/2222）
+{"result":"まだ結果発表前です。公開時刻をお待ちください。"}% 
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いい感じに進んでますが、ログから判断すると**2点だけ不整合**があります。  
+
+1) **UPSERT が 500 を返す**のに、実体は作成/更新されている  
+→ SQL の `ON CONFLICT ... DO UPDATE` に `RETURNING *` が足りない、または `rows[0]` 参照時に空で落ちている可能性が高いです。  
+2) psql の「1分過去へ」更新コマンドが **クォート崩れ**でエラーになっています。  
+
+下を丸ごとコピペ置き換えで直します。
+
+---
+
+# backend/routes/prizes.js（置き換え）
+
+```js
+// backend/routes/prizes.js
+const express = require("express");
+const router = express.Router();
+const pool = require("../db");
+const { jstToUtcIso, utcDateToJstText } = require("../time");
+const adminAuth = require("../middleware/adminAuth");
+
+// ---- 共通：DB行→API表現
+function shapePrize(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    result_time_jst: row.result_time_jst,            // JSTの文字列をそのまま保持
+    publish_time_utc: row.publish_time_utc,          // UTCのタイムスタンプ
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    jst_view_from_utc: utcDateToJstText(row.publish_time_utc), // 表示用
+  };
+}
+
+// 一覧
+router.get("/", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      "SELECT id,name,result_time_jst,publish_time_utc,created_at,updated_at FROM prizes ORDER BY created_at ASC"
+    );
+    res.json(r.rows.map(shapePrize));
+  } catch (e) {
+    console.error("GET /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+// 取得
+router.get("/:id", async (req, res) => {
+  try {
+    const r = await pool.query(
+      "SELECT id,name,result_time_jst,publish_time_utc,created_at,updated_at FROM prizes WHERE id = $1",
+      [req.params.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: "Not found" });
+    res.json(shapePrize(r.rows[0]));
+  } catch (e) {
+    console.error("GET /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+// 作成（重複時は409）
+router.post("/", adminAuth, async (req, res) => {
+  const { id, name, result_time_jst } = req.body || {};
+  if (!id || !name || !result_time_jst) {
+    return res.status(400).json({ error: "id, name, result_time_jst are required" });
+  }
+  try {
+    const publishUTC = jstToUtcIso(result_time_jst);
+    const r = await pool.query(
+      `INSERT INTO prizes (id, name, result_time_jst, publish_time_utc, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,NOW(),NOW())
+       RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at`,
+      [id, name, result_time_jst, publishUTC]
+    );
+    res.status(201).json(shapePrize(r.rows[0]));
+  } catch (e) {
+    // 重複キー
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "Duplicate id" });
+    }
+    console.error("POST /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to create prize" });
+  }
+});
+
+// UPSERT（存在すれば更新／無ければ作成）
+router.put("/upsert", adminAuth, async (req, res) => {
+  const { id, name, result_time_jst } = req.body || {};
+  if (!id || !name || !result_time_jst) {
+    return res.status(400).json({ error: "id, name, result_time_jst are required" });
+  }
+  try {
+    const publishUTC = jstToUtcIso(result_time_jst);
+    const r = await pool.query(
+      `INSERT INTO prizes (id, name, result_time_jst, publish_time_utc, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,NOW(),NOW())
+       ON CONFLICT (id) DO UPDATE
+         SET name = EXCLUDED.name,
+             result_time_jst = EXCLUDED.result_time_jst,
+             publish_time_utc = EXCLUDED.publish_time_utc,
+             updated_at = NOW()
+       RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at`,
+      [id, name, result_time_jst, publishUTC]
+    );
+    res.json(shapePrize(r.rows[0]));
+  } catch (e) {
+    console.error("PUT /api/prizes/upsert error:", e);
+    res.status(500).json({ error: "Failed to upsert prize" });
+  }
+});
+
+module.exports = router;
+```
+
+---
+
+# backend/routes/entries.js（置き換え）
+
+```js
+// backend/routes/entries.js
+const express = require("express");
+const router = express.Router();
+const pool = require("../db");
+const adminAuth = require("../middleware/adminAuth");
+
+// 一覧（特定賞品）
+router.get("/:prizeId", async (req, res) => {
+  try {
+    const r = await pool.query(
+      "SELECT id,prize_id,entry_number,is_winner FROM entries WHERE prize_id = $1 ORDER BY entry_number ASC",
+      [req.params.prizeId]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error("GET /api/entries/:prizeId error:", e);
+    res.status(500).json({ error: "Failed to fetch entries" });
+  }
+});
+
+// 作成（重複時 409）
+router.post("/", adminAuth, async (req, res) => {
+  const { prize_id, entry_number, password, is_winner } = req.body || {};
+  if (!prize_id || !entry_number || typeof password !== "string") {
+    return res.status(400).json({ error: "prize_id, entry_number, password are required" });
+  }
+  try {
+    const r = await pool.query(
+      `INSERT INTO entries (prize_id, entry_number, password, is_winner)
+       VALUES ($1,$2,$3,COALESCE($4,false))
+       RETURNING id,prize_id,entry_number,is_winner`,
+      [prize_id, entry_number, password, is_winner]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) {
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "Entry already exists for this prize_id and entry_number" });
+    }
+    console.error("POST /api/entries error:", e);
+    res.status(500).json({ error: "Failed to create entry" });
+  }
+});
+
+// UPSERT（(prize_id, entry_number) 一意）
+router.put("/upsert", adminAuth, async (req, res) => {
+  const { prize_id, entry_number, password, is_winner } = req.body || {};
+  if (!prize_id || !entry_number || typeof password !== "string") {
+    return res.status(400).json({ error: "prize_id, entry_number, password are required" });
+  }
+  try {
+    const r = await pool.query(
+      `INSERT INTO entries (prize_id, entry_number, password, is_winner)
+         VALUES ($1,$2,$3,COALESCE($4,false))
+       ON CONFLICT (prize_id, entry_number) DO UPDATE
+         SET password = EXCLUDED.password,
+             is_winner = EXCLUDED.is_winner
+       RETURNING id,prize_id,entry_number,is_winner`,
+      [prize_id, entry_number, password, is_winner]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error("PUT /api/entries/upsert error:", e);
+    res.status(500).json({ error: "Failed to upsert entry" });
+  }
+});
+
+module.exports = router;
+```
+
+---
+
+# psql のクォート崩れ対策（そのまま実行OK）
+
+```bash
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at = NOW() WHERE id='B9001';"
+```
+
+> 重要：**ダブルクォート全体**にして、SQL内部の **シングルクォート**（`'1 minute'` や `id='B9001'`）をそのまま書くと崩れません。  
+> あるいは安全に **ヒアドキュメント**でもOKです：
+```bash
+psql "$DBURL" <<'SQL'
+UPDATE prizes
+SET publish_time_utc = NOW() - interval '1 minute',
+    updated_at = NOW()
+WHERE id = 'B9001';
+SQL
+```
+
+---
+
+# 動作確認（echo コメント付き）
+
+```bash
+echo "# 1) サーバ再起動（最新ルート反映）"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+cd ~/Downloads/distribution-lottery-app/backend
+PORT=3001 node index.js
+
+# ← 別ターミナルで続行（このウィンドウはサーバ表示専用）
+
+echo "# 2) 管理シークレット読込（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# ADMIN 長さ: ${#ADMIN}"
+
+echo "# 3) 賞品 UPSERT（なければ作成・あれば更新）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/prizes/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B9001","name":"アップサート動作確認","result_time_jst":"2025-08-30 12:34"}'
+
+echo "# 4) 参加者 UPSERT（001=当選, 002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 5) 参加者一覧で確認"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 6) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at = NOW() WHERE id='B9001';"
+
+echo "# 7) 当選/落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check -H 'Content-Type: application/json' -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}'
+curl -sS -X POST http://localhost:3001/api/lottery/check -H 'Content-Type: application/json' -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}'
+```
+
+---
+
+## これで期待される挙動
+
+- `PUT /api/prizes/upsert` / `PUT /api/entries/upsert` が **200 OK + JSON（作成時も更新時も）** を返します。500は消えます。  
+- psql コマンドは **クォートエラーなし**で即公開できます。  
+- 以後の一括CSV投入や管理UIからの操作にも影響しません（APIの戻りが安定）。  
+
+この状態で再度ためしてみてください。必要なら `routes/lottery.js` も見直しますが、いまのログだと原因は上記2点に集約されていました。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % >....                                
+echo "# 4) 参加者 UPSERT（001=当選, 002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 5) 参加者一覧で確認"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 6) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at = NOW() WHERE id='B9001';"
+
+echo "# 7) 当選/落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check -H 'Content-Type: application/json' -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}'
+curl -sS -X POST http://localhost:3001/api/lottery/check -H 'Content-Type: application/json' -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}'
+# 2) 管理シークレット読込（値は表示しない）
+# ADMIN 長さ: 64
+# 3) 賞品 UPSERT（なければ作成・あれば更新）
+{"id":"B9001","name":"アップサート動作確認","result_time_jst":"2025-08-30 12:34","publish_time_utc":"2025-08-30T03:34:00.000Z","created_at":"2025-08-19T05:51:50.542Z","updated_at":"2025-08-19T05:57:14.371Z","jst_view_from_utc":"2025-08-30 12:34"}
+HTTP 200
+# 4) 参加者 UPSERT（001=当選, 002=落選）
+{"id":12,"prize_id":"B9001","entry_number":"001","is_winner":true}
+HTTP 200
+{"id":13,"prize_id":"B9001","entry_number":"002","is_winner":false}
+HTTP 200
+# 5) 参加者一覧で確認
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 6) 即公開（1分過去へ）
+UPDATE 1
+# 7) 当選/落選チェック
+{"result":"🎉 おめでとうございます！「アップサート動作確認」に当選しました！"}{"result":"残念ながら「アップサート動作確認」には当選しませんでした。"}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+最高です、そのログで**一連の流れは想定どおり完走**しています 🎯
+
+# OK判定（今回の出力）
+- 「賞品 UPSERT」→ `HTTP 200`（既存更新）✅  
+- 「参加者 UPSERT（001/002）」→ どちらも `HTTP 200` ✅  
+- 「一覧（/api/entries/B9001）」→ 001=true / 002=false を確認 ✅  
+- 「公開を1分過去に更新」→ `UPDATE 1` ✅  
+- 「当選/落選チェック」→ 当選/落選それぞれ正しいメッセージ ✅
+
+細かいところで、当落チェックの2本が**同じ行に続けて表示**されているので、見やすさだけ改善しておきます（挙動は問題なし）。
+
+```bash
+echo "# 7) 当選/落選チェック（見やすく改行）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+```
+
+# 次にやると良い小チェック
+```bash
+echo "# 管理API: 同じ参加者をもう一度UPSERT（idempotent確認）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+```
+- 期待：`HTTP 200` で同じ内容が返り、二重登録されない（同一 (prize_id, entry_number) のまま）✅
+
+# 補足メモ
+- 参加者の**作成/UPSERT系は常に管理ヘッダ必須**です（今回の 401 → OKな挙動）。  
+- 公開操作の SQL は、ダブルクォート全体＋SQL内はシングルクォートで崩れません（今回の形でOK）。
+
+このまま **CSV一括投入（/admin）→ 公開 → 当落確認**の本番想定フローに進めます。必要なら、公開をAPI化（`/api/prizes/:id/publish-now` 的な管理専用エンドポイント）にもできます。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 7) 当選/落選チェック（見やす く改行）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+# 7) 当選/落選チェック（見やすく改行）
+{"result":"🎉 おめでとうございます！「アップサート動作確認」に当選しました！"}
+{"result":"残念ながら「アップサート動作確認」には当選しませんでした。"}
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % echo "# 管理API: 同じ参加者をもう一度UPSERT（idempotent確認）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+# 管理API: 同じ参加者をもう一度UPSERT（idempotent確認）
+{"id":12,"prize_id":"B9001","entry_number":"001","is_winner":true}
+HTTP 200
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いい感じ！そのログなら
+
+- 🎯 当選/落選チェックは期待どおり  
+- 🔁 UPSERT の冪等性（同じデータで再実行しても増えない）も `HTTP 200` で確認済み
+
+追加で “変更加工も正しく反映されるか” を一発で確かめる短いチェックを置いときます（あなたのフォーマットに合わせて `echo` コメント付き）。
+
+```bash
+echo "# エビデンス: 直前状態（一覧）"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 1) 参加者001を『落選』に変更（UPSERTで上書き）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":false}'
+
+echo "# 2) 反映確認（一覧で001がfalseになっているか）"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 3) 当選/落選チェック（結果が反転しているか）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+
+echo "# 4) セキュリティ動作確認（管理ヘッダなし→ 401 を期待）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+```
+
+これで「冪等（同じ入力→状態不変）」と「上書き更新」「公開API/管理APIの境界（401）」まで一通りの振る舞いが検証できます。必要あれば、公開前ガード（公開時刻を未来に戻して “公開前メッセージ” が出るか）も続けて検証できますよ。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# エビデンス: 直前状態（一覧）" 
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 1) 参加者001を『落選』に変更（UPSERTで上書き）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":false}'
+
+echo "# 2) 反映確認（一覧で001がfalseになっているか）"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 3) 当選/落選チェック（結果が反転しているか）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+
+echo "# 4) セキュリティ動作確認（管理ヘッダなし→ 401 を期待）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+# エビデンス: 直前状態（一覧）
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 1) 参加者001を『落選』に変更（UPSERTで上書き）
+{"id":12,"prize_id":"B9001","entry_number":"001","is_winner":false}
+HTTP 200
+# 2) 反映確認（一覧で001がfalseになっているか）
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": false
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 3) 当選/落選チェック（結果が反転しているか）
+{"result":"残念ながら「アップサート動作確認」には当選しませんでした。"}
+{"result":"残念ながら「アップサート動作確認」には当選しませんでした。"}
+# 4) セキュリティ動作確認（管理ヘッダなし→ 401 を期待）
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+バッチリです。そのログ、狙いどおり 👍
+
+- 001 を `is_winner: true → false` に UPSERT → `HTTP 200` ＆一覧でも `false` 反映
+- 当落結果も **両方「落選」** に反転
+- 管理ヘッダ無しの UPSERT は **401**（ガードOK）
+
+この A-3 の意図（更新が効く／結果が反転する／認証ガードが効く）は満たせています。
+
+念のための「戻し」や追加チェックを、いつもの `echo` 付きで置いておきます（必要なものだけ実行してください）。
+
+```bash
+echo "# 001 を当選に戻す（UPSERT）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+
+echo "# 反映確認（001 が true に戻っているか）"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 事前公開ガードの再確認（公開時刻を5分未来→結果は待機文言）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() + interval '5 minute', updated_at=NOW() WHERE id='B9001';"
+
+echo "# 公開前メッセージが出るか（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+
+echo "# 即公開に戻す（1分過去）"
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9001';"
+```
+
+次のタスクいきましょ。どれにします？
+- CSV一括投入の **エラー行カウント** 表示の微調整
+- /admin の **編集UI（既存賞品の変更）**
+- **監査ログ**（管理操作の記録）
+- Render 本番用の **環境変数セット手順** 再確認
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 001 を当選に戻す（UPSERT）"
+curl -sS -w "\nHTTP %{http_code}\n" -X PUT http://localhost:3001/api/entries/upsert \
+  -H 'Content-Type: application/json' -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9001","entry_number":"001","password":"1111","is_winner":true}'
+
+echo "# 反映確認（001 が true に戻っているか）"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+
+echo "# 事前公開ガードの再確認（公開時刻を5分未来→結果は待機文言）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() + interval '5 minute', updated_at=NOW() WHERE id='B9001';"
+
+echo "# 公開前メッセージが出るか（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+
+echo "# 即公開に戻す（1分過去）"
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9001';"
+# 001 を当選に戻す（UPSERT）
+{"id":12,"prize_id":"B9001","entry_number":"001","is_winner":true}
+HTTP 200
+# 反映確認（001 が true に戻っているか）
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 事前公開ガードの再確認（公開時刻を5分未来→結果は待機文言）
+UPDATE 1
+# 公開前メッセージが出るか（001/1111）
+{"result":"まだ結果発表前です。公開時刻をお待ちください。"}
+# 即公開に戻す（1分過去）
+UPDATE 1
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+完璧です 👌
+
+- **UPSERT** で `001` が当選に戻る → `HTTP 200` & 一覧が `001:true / 002:false` に更新 ✅  
+- 公開時刻を **+5分** にすると当落APIは「まだ結果発表前です」✅  
+- その後 **-1分** で即公開に戻せている ✅
+
+仕上げの最終確認だけ、いつもの `echo` 形式で置いておきます（必要なら実行）。
+
+```bash
+echo "# 最終確認: 001=当選 / 002=落選 をAPIで確認（いま=公開済み想定）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+
+echo "# 念のため: エントリー一覧（B9001）で状態を再チェック"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+```
+
+次はどれに進めますか？
+- 管理GUIに「公開時刻を今にする」ボタン追加
+- /admin に **UPSERT UI**（CSVなしで手動投入・上書き）
+- 本番向け：Render の環境変数セット最終チェック（`ADMIN_SECRET`, `DATABASE_URL` など）
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 最終確認: 001=当選 / 002=落選 をAPIで確認（いま=公開済み想定）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"001","password":"1111"}' ; echo
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9001","entryNumber":"002","password":"2222"}' ; echo
+
+echo "# 念のため: エントリー一覧（B9001）で状態を再チェック"
+curl -sS http://localhost:3001/api/entries/B9001 | jq . || curl -sS http://localhost:3001/api/entries/B9001
+# 最終確認: 001=当選 / 002=落選 をAPIで確認（いま=公開済み想定）
+{"result":"🎉 おめでとうございます！「アップサート動作確認」に当選しました！"}
+{"result":"残念ながら「アップサート動作確認」には当選しませんでした。"}
+# 念のため: エントリー一覧（B9001）で状態を再チェック
+[
+  {
+    "id": 12,
+    "prize_id": "B9001",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 13,
+    "prize_id": "B9001",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+👍 すべて期待どおりです。
+
+- 当落API  
+  - 001/1111 → 🎉 当選メッセージ ✅  
+  - 002/2222 → 落選メッセージ ✅
+- エントリー一覧（B9001）  
+  - 001 → `is_winner: true`、002 → `is_winner: false` と整合 ✅
+
+この状態で本番想定の一連フローはOKです。  
+次やるなら：
+- テストIDの整理（不要なら B9000 / B9001 などを削除）
+- /admin の **CSV一括投入→即公開** の通し稼働確認
+- Render への環境変数（`ADMIN_SECRET`, `DATABASE_URL`）最終チェック
+
+続き、どれから行きます？
+
+---
+
+user:
+	•	管理GUIに「公開時刻を今にする」ボタン追加
+	•	/admin の CSV一括投入→即公開 の通し稼働確認
+	•	/admin に UPSERT UI（CSVなしで手動投入・上書き）
+	•	Render への環境変数（ADMIN_SECRET, DATABASE_URL）最終チェック
+	•	本番向け：Render の環境変数セット最終チェック（ADMIN_SECRET, DATABASE_URL など）
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね、その順で進めましょう。下に**実装（コード置き換え）＋動作チェック手順（echo 形式）＋Render最終チェック**をまとめました。
+
+---
+
+# 1) 「公開時刻を今にする」ボタン（管理GUI）＋API
+
+## バックエンド：publish_now エンドポイント追加（置き換え版）
+
+**backend/routes/prizes.js**（ファイル丸ごと置き換え）
+
+```js
+const express = require("express");
+const router = express.Router();
+const pool = require("../db");
+const { jstToUtcIso, utcDateToJstText } = require("../time");
+const adminAuth = require("../middleware/adminAuth");
+
+// GET /api/prizes
+router.get("/", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, result_time_jst, publish_time_utc, created_at, updated_at
+       FROM prizes
+       ORDER BY created_at ASC`
+    );
+    const mapped = rows.map(r => ({
+      ...r,
+      jst_view_from_utc: r.publish_time_utc ? utcDateToJstText(new Date(r.publish_time_utc)) : null
+    }));
+    res.json(mapped);
+  } catch (e) {
+    console.error("GET /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+// GET /api/prizes/:id
+router.get("/:id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, result_time_jst, publish_time_utc, created_at, updated_at
+       FROM prizes WHERE id=$1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const r = rows[0];
+    res.json({
+      ...r,
+      jst_view_from_utc: r.publish_time_utc ? utcDateToJstText(new Date(r.publish_time_utc)) : null
+    });
+  } catch (e) {
+    console.error("GET /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+// POST /api/prizes（作成）
+router.post("/", adminAuth, async (req, res) => {
+  try {
+    const { id, name, result_time_jst } = req.body;
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({ error: "id, name, result_time_jst are required" });
+    }
+    const publishUtc = jstToUtcIso(result_time_jst);
+    const { rows } = await pool.query(
+      `INSERT INTO prizes (id, name, result_time_jst, publish_time_utc)
+       VALUES ($1,$2,$3,$4)
+       RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at`,
+      [id, name, result_time_jst, publishUtc]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    console.error("POST /api/prizes error:", e);
+    // 重複IDの扱いを明示
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "Duplicate id" });
+    }
+    res.status(500).json({ error: "Failed to create prize" });
+  }
+});
+
+// PUT /api/prizes/upsert（存在すれば更新／なければ作成）
+router.put("/upsert", adminAuth, async (req, res) => {
+  try {
+    const { id, name, result_time_jst } = req.body;
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({ error: "id, name, result_time_jst are required" });
+    }
+    const publishUtc = jstToUtcIso(result_time_jst);
+    const { rows } = await pool.query(
+      `INSERT INTO prizes (id, name, result_time_jst, publish_time_utc)
+         VALUES ($1,$2,$3,$4)
+       ON CONFLICT (id) DO UPDATE
+         SET name=EXCLUDED.name,
+             result_time_jst=EXCLUDED.result_time_jst,
+             publish_time_utc=EXCLUDED.publish_time_utc,
+             updated_at=NOW()
+       RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at`,
+      [id, name, result_time_jst, publishUtc]
+    );
+    res.status(200).json({
+      ...rows[0],
+      jst_view_from_utc: rows[0].publish_time_utc ? utcDateToJstText(new Date(rows[0].publish_time_utc)) : null
+    });
+  } catch (e) {
+    console.error("PUT /api/prizes/upsert error:", e);
+    res.status(500).json({ error: "Failed to upsert prize" });
+  }
+});
+
+// POST /api/prizes/:id/publish_now（公開時刻を“今”にする）
+router.post("/:id/publish_now", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { rows } = await pool.query(
+      `UPDATE prizes
+         SET publish_time_utc = NOW(), updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const r = rows[0];
+    res.json({
+      ...r,
+      jst_view_from_utc: r.publish_time_utc ? utcDateToJstText(new Date(r.publish_time_utc)) : null
+    });
+  } catch (e) {
+    console.error("POST /api/prizes/:id/publish_now error:", e);
+    res.status(500).json({ error: "Failed to publish now" });
+  }
+});
+
+module.exports = router;
+```
+
+## フロント：Admin 画面にボタン＆UPSERT UI（置き換え版）
+
+**frontend/src/pages/Admin.jsx**（ファイル丸ごと置き換え）
+
+```jsx
+import React, { useEffect, useState } from "react";
+
+const API = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+
+function fmtJst(s) {
+  // s: "YYYY-MM-DD HH:mm"
+  return s?.replace(/-/g, "/"); // 既存表示はサーバから整形済み（jst_view_from_utc）を使用
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState([]);
+  const [createForm, setCreateForm] = useState({ id: "", name: "", jst: "" });
+  const [csv, setCsv] = useState(null);
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  const [csvMode, setCsvMode] = useState("insert_only"); // insert_only | upsert
+  const [uPrizeId, setUPrizeId] = useState("");
+  const [uEntryNumber, setUEntryNumber] = useState("");
+  const [uPassword, setUPassword] = useState("");
+  const [uIsWinner, setUIsWinner] = useState(false);
+
+  const ADMIN = ""; // ブラウザからは送らない想定。本番は管理画面を社内VPN等で保護。
+
+  async function load() {
+    const r = await fetch(`${API}/api/prizes`);
+    const j = await r.json();
+    setPrizes(j);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function createPrize() {
+    const body = {
+      id: createForm.id.trim(),
+      name: createForm.name.trim(),
+      result_time_jst: createForm.jst.trim(),
+    };
+    const r = await fetch(`${API}/api/prizes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-admin-secret": ADMIN },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(`作成失敗: ${j.error || r.statusText}`);
+    } else {
+      alert("作成しました");
+      setCreateForm({ id: "", name: "", jst: "" });
+      load();
+    }
+  }
+
+  async function publishNow(id) {
+    const r = await fetch(`${API}/api/prizes/${id}/publish_now`, {
+      method: "POST",
+      headers: { "x-admin-secret": ADMIN },
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(`公開失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(`公開時刻を現在に更新しました: ${j.jst_view_from_utc}`);
+      load();
+    }
+  }
+
+  async function uploadCsv() {
+    if (!csv || !csvPrizeId) {
+      alert("賞品ID と CSV を指定してください");
+      return;
+    }
+    const fd = new FormData();
+    fd.append("prizeId", csvPrizeId.trim());
+    fd.append("mode", csvMode); // サーバ側で挙動を切り替える想定（insert_only / upsert）
+    fd.append("file", csv);
+
+    const r = await fetch(`${API}/api/entries/bulk`, {
+      method: "POST",
+      headers: { "x-admin-secret": ADMIN },
+      body: fd,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`一括投入失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(`一括投入: 成功 ${j.inserted ?? 0} / 既存 ${j.skipped ?? 0} / 更新 ${j.updated ?? 0}`);
+    }
+  }
+
+  async function upsertEntryManual() {
+    if (!uPrizeId || !uEntryNumber || !uPassword) {
+      alert("賞品ID / 抽選番号 / パスワード を入力してください");
+      return;
+    }
+    const body = {
+      prize_id: uPrizeId.trim(),
+      entry_number: uEntryNumber.trim(),
+      password: uPassword,
+      is_winner: !!uIsWinner,
+    };
+    const r = await fetch(`${API}/api/entries/upsert`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-admin-secret": ADMIN },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(`UPSERT失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(`UPSERT成功: id=${j.id} / ${j.entry_number} → ${j.is_winner ? "当選" : "落選"}`);
+    }
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h1>管理：賞品一覧</h1>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>賞品の新規作成</h2>
+        <div>
+          <div>
+            賞品ID：<input value={createForm.id} onChange={e => setCreateForm({ ...createForm, id: e.target.value })} placeholder="例: B002" />
+          </div>
+          <div>
+            賞品名：<input value={createForm.name} onChange={e => setCreateForm({ ...createForm, name: e.target.value })} placeholder="例: ○○賞" />
+          </div>
+          <div>
+            公開日時（JST）：<input
+              value={createForm.jst}
+              onChange={e => setCreateForm({ ...createForm, jst: e.target.value })}
+              placeholder="YYYY-MM-DD HH:mm"
+            />
+            <div style={{ color: "#555" }}>ヒント：初期値は「現時間＋1時間」です。</div>
+          </div>
+          <button onClick={createPrize}>作成する</button>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>参加者エントリーの一括投入（CSV）</h2>
+        <div>対象の賞品ID：<input value={csvPrizeId} onChange={e => setCsvPrizeId(e.target.value)} placeholder="例: B001" /></div>
+        <div>
+          重複時の動作：
+          <label><input type="radio" name="csvMode" value="insert_only" checked={csvMode==="insert_only"} onChange={() => setCsvMode("insert_only")} />既存を維持（新規のみ）</label>{" "}
+          <label><input type="radio" name="csvMode" value="upsert" checked={csvMode==="upsert"} onChange={() => setCsvMode("upsert")} />UPSERT（既存は上書き）</label>
+        </div>
+        <div><input type="file" accept=".csv" onChange={e => setCsv(e.target.files?.[0] ?? null)} /></div>
+        <div><button onClick={uploadCsv}>投入する</button></div>
+        <div style={{ marginTop: 8, color: "#555" }}>
+          CSVフォーマット例（1行目はヘッダ必須）：
+          <pre style={{ background:"#f6f6f6", padding:8 }}>
+entry_number,password,is_winner
+001,1111,true
+002,2222,false
+          </pre>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>単票 UPSERT（手動）</h2>
+        <div>賞品ID：<input value={uPrizeId} onChange={e => setUPrizeId(e.target.value)} placeholder="例: B001" /></div>
+        <div>抽選番号：<input value={uEntryNumber} onChange={e => setUEntryNumber(e.target.value)} placeholder="例: 001" /></div>
+        <div>パスワード：<input value={uPassword} onChange={e => setUPassword(e.target.value)} /></div>
+        <div>
+          当選？
+          <input type="checkbox" checked={uIsWinner} onChange={e => setUIsWinner(e.target.checked)} />
+        </div>
+        <button onClick={upsertEntryManual}>UPSERT 実行</button>
+      </section>
+
+      <section>
+        <h2>賞品一覧</h2>
+        {prizes.map(p => (
+          <div key={p.id} style={{ border:"1px solid #ddd", padding:12, marginBottom:8 }}>
+            <div style={{ fontWeight:"bold" }}>
+              {p.id} {p.name}
+            </div>
+            <div>公開日: {p.jst_view_from_utc ? p.jst_view_from_utc.replace(/-/g,"/") : "-"}</div>
+            <div style={{ marginTop:8 }}>
+              <a href={`/p?prizeId=${encodeURIComponent(p.id)}`} target="_blank" rel="noreferrer">参加者ページを開く</a>{" "}
+              <button onClick={() => publishNow(p.id)}>公開時刻を今にする</button>
+            </div>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+```
+
+> 注）ブラウザから `x-admin-secret` を送らない前提のままにしています（本番はVPNやBASIC認証等で保護）。もし必要なら、管理専用UIでヘッダを付ける形にもできます。
+
+---
+
+# 2) /admin の CSV一括投入→即公開 の通し稼働確認（echo 版）
+
+```bash
+echo "# 管理画面を開く（CSV選択→投入→成功数表示を確認）"
+open http://localhost:3000/admin
+
+echo "# バックエンドログを横で監視（別ターミナル）"
+# （既に起動中ならそのターミナルでログ流れを確認）
+```
+
+CSV投入後に、即公開は管理画面の**「公開時刻を今にする」**ボタンで実施。  
+API側で直接試すなら：
+
+```bash
+echo "# （任意）APIで公開時刻=NOW()（管理ヘッダ付与が必要なら curl に -H を追加）"
+curl -sS -X POST "http://localhost:3001/api/prizes/PRIZE_ID/publish_now"
+```
+
+---
+
+# 3) /admin に UPSERT UI（CSVなしで手動投入・上書き）
+
+上の **Admin.jsx** に実装済みです（「単票 UPSERT（手動）」）。  
+- `賞品ID/抽選番号/パスワード/当選フラグ` を指定して **UPSERT 実行**。  
+- サーバは `PUT /api/entries/upsert` を呼びます。
+
+---
+
+# 4) Render への環境変数 最終チェック（ローカル→本番）
+
+**Render Dashboard → Service → Environment → Environment Variables**  
+設定すべき値：
+- `DATABASE_URL`：Render の Postgres インスタンスの接続文字列（?sslmode=require を含むこと）
+- `ADMIN_SECRET`：backend/.env と同一の強い値（英数＋`-_` の Base64URL を推奨）
+- （任意）`PORT`：Render 側は通常自動割当。Express は `process.env.PORT` を使用
+
+**チェック手順（echo）**
+
+```bash
+echo "# Render: 環境変数が入っているか（ダッシュボードで可視確認）"
+echo "# 1) ADMIN_SECRET が空でない、DATABASE_URL が自前のDBを指すことを確認"
+echo "# 2) デプロイ再起動（Manual deploy / Clear build cache → Deploy を推奨）"
+echo "# 3) Logs で [boot] ADMIN_SECRET configured? YES を確認"
+```
+
+---
+
+# 5) 本番向け：Render の環境変数セット最終チェック（再掲・コピペ可）
+
+```bash
+echo "# Render 本番チェック短縮版"
+echo "# - Environment Variables: ADMIN_SECRET / DATABASE_URL が設定済み"
+echo "# - Deploy 後 Logs: [boot] ADMIN_SECRET configured? YES"
+echo "# - /api/prizes が 200 OK で取れる（公開API）"
+echo "# - 管理操作（CSV投入, publish_now, UPSERT）がダッシュボード経由で行える"
+```
+
+---
+
+必要なら、**CSV一括投入のサーバ側（/api/entries/bulk）**も「insert_only / upsert」モード対応の置き換え版を出します（今のUIはその想定で実装済み）。次はどれを詰めますか？
+
+---
+
+user:
+おかいしいよ。Admin.jsxの場所違う
+
+今のツリー構造は以下
+m-aoki@MacBook-Pro-20240703 distribution-lottery-app % cd frontend
+m-aoki@MacBook-Pro-20240703 frontend % ls
+node_modules		package.json		README.md
+package-lock.json	public			src
+m-aoki@MacBook-Pro-20240703 frontend % tree -L 2  
+.
+├── node_modules
+│   ├── @alloc
+│   ├── @ampproject
+│   ├── @babel
+│   ├── @bcoe
+│   ├── @csstools
+│   ├── @eslint
+│   ├── @eslint-community
+│   ├── @humanwhocodes
+│   ├── @isaacs
+│   ├── @istanbuljs
+│   ├── @jest
+│   ├── @jridgewell
+│   ├── @leichtgewicht
+│   ├── @nicolo-ribaudo
+│   ├── @nodelib
+│   ├── @pkgjs
+│   ├── @pmmmwh
+│   ├── @remix-run
+│   ├── @rollup
+│   ├── @rtsao
+│   ├── @rushstack
+│   ├── @sinclair
+│   ├── @sinonjs
+│   ├── @surma
+│   ├── @svgr
+│   ├── @tootallnate
+│   ├── @trysound
+│   ├── @types
+│   ├── @typescript-eslint
+│   ├── @ungap
+│   ├── @webassemblyjs
+│   ├── @xtuc
+│   ├── abab
+│   ├── accepts
+│   ├── acorn
+│   ├── acorn-globals
+│   ├── acorn-import-phases
+│   ├── acorn-jsx
+│   ├── acorn-walk
+│   ├── address
+│   ├── adjust-sourcemap-loader
+│   ├── agent-base
+│   ├── ajv
+│   ├── ajv-formats
+│   ├── ajv-keywords
+│   ├── ansi-escapes
+│   ├── ansi-html
+│   ├── ansi-html-community
+│   ├── ansi-regex
+│   ├── ansi-styles
+│   ├── any-promise
+│   ├── anymatch
+│   ├── arg
+│   ├── argparse
+│   ├── aria-query
+│   ├── array-buffer-byte-length
+│   ├── array-flatten
+│   ├── array-includes
+│   ├── array-union
+│   ├── array.prototype.findlast
+│   ├── array.prototype.findlastindex
+│   ├── array.prototype.flat
+│   ├── array.prototype.flatmap
+│   ├── array.prototype.reduce
+│   ├── array.prototype.tosorted
+│   ├── arraybuffer.prototype.slice
+│   ├── asap
+│   ├── ast-types-flow
+│   ├── async
+│   ├── async-function
+│   ├── asynckit
+│   ├── at-least-node
+│   ├── autoprefixer
+│   ├── available-typed-arrays
+│   ├── axe-core
+│   ├── axios
+│   ├── axobject-query
+│   ├── babel-jest
+│   ├── babel-loader
+│   ├── babel-plugin-istanbul
+│   ├── babel-plugin-jest-hoist
+│   ├── babel-plugin-macros
+│   ├── babel-plugin-named-asset-import
+│   ├── babel-plugin-polyfill-corejs2
+│   ├── babel-plugin-polyfill-corejs3
+│   ├── babel-plugin-polyfill-regenerator
+│   ├── babel-plugin-transform-react-remove-prop-types
+│   ├── babel-preset-current-node-syntax
+│   ├── babel-preset-jest
+│   ├── babel-preset-react-app
+│   ├── balanced-match
+│   ├── batch
+│   ├── bfj
+│   ├── big.js
+│   ├── binary-extensions
+│   ├── bluebird
+│   ├── body-parser
+│   ├── bonjour-service
+│   ├── boolbase
+│   ├── brace-expansion
+│   ├── braces
+│   ├── browser-process-hrtime
+│   ├── browserslist
+│   ├── bser
+│   ├── buffer-from
+│   ├── builtin-modules
+│   ├── bytes
+│   ├── call-bind
+│   ├── call-bind-apply-helpers
+│   ├── call-bound
+│   ├── callsites
+│   ├── camel-case
+│   ├── camelcase
+│   ├── camelcase-css
+│   ├── caniuse-api
+│   ├── caniuse-lite
+│   ├── case-sensitive-paths-webpack-plugin
+│   ├── chalk
+│   ├── char-regex
+│   ├── check-types
+│   ├── chokidar
+│   ├── chrome-trace-event
+│   ├── ci-info
+│   ├── cjs-module-lexer
+│   ├── clean-css
+│   ├── cliui
+│   ├── co
+│   ├── coa
+│   ├── collect-v8-coverage
+│   ├── color-convert
+│   ├── color-name
+│   ├── colord
+│   ├── colorette
+│   ├── combined-stream
+│   ├── commander
+│   ├── common-tags
+│   ├── commondir
+│   ├── compressible
+│   ├── compression
+│   ├── concat-map
+│   ├── confusing-browser-globals
+│   ├── connect-history-api-fallback
+│   ├── content-disposition
+│   ├── content-type
+│   ├── convert-source-map
+│   ├── cookie
+│   ├── cookie-signature
+│   ├── core-js
+│   ├── core-js-compat
+│   ├── core-js-pure
+│   ├── core-util-is
+│   ├── cosmiconfig
+│   ├── cross-spawn
+│   ├── crypto-random-string
+│   ├── css-blank-pseudo
+│   ├── css-declaration-sorter
+│   ├── css-has-pseudo
+│   ├── css-loader
+│   ├── css-minimizer-webpack-plugin
+│   ├── css-prefers-color-scheme
+│   ├── css-select
+│   ├── css-select-base-adapter
+│   ├── css-tree
+│   ├── css-what
+│   ├── cssdb
+│   ├── cssesc
+│   ├── cssnano
+│   ├── cssnano-preset-default
+│   ├── cssnano-utils
+│   ├── csso
+│   ├── cssom
+│   ├── cssstyle
+│   ├── damerau-levenshtein
+│   ├── data-urls
+│   ├── data-view-buffer
+│   ├── data-view-byte-length
+│   ├── data-view-byte-offset
+│   ├── debug
+│   ├── decamelize
+│   ├── decimal.js
+│   ├── dedent
+│   ├── deep-is
+│   ├── deepmerge
+│   ├── default-gateway
+│   ├── define-data-property
+│   ├── define-lazy-prop
+│   ├── define-properties
+│   ├── delayed-stream
+│   ├── depd
+│   ├── destroy
+│   ├── detect-newline
+│   ├── detect-node
+│   ├── detect-port-alt
+│   ├── didyoumean
+│   ├── diff-sequences
+│   ├── dijkstrajs
+│   ├── dir-glob
+│   ├── dlv
+│   ├── dns-packet
+│   ├── doctrine
+│   ├── dom-converter
+│   ├── dom-serializer
+│   ├── domelementtype
+│   ├── domexception
+│   ├── domhandler
+│   ├── domutils
+│   ├── dot-case
+│   ├── dotenv
+│   ├── dotenv-expand
+│   ├── dunder-proto
+│   ├── duplexer
+│   ├── eastasianwidth
+│   ├── ee-first
+│   ├── ejs
+│   ├── electron-to-chromium
+│   ├── emittery
+│   ├── emoji-regex
+│   ├── emojis-list
+│   ├── encodeurl
+│   ├── enhanced-resolve
+│   ├── entities
+│   ├── error-ex
+│   ├── error-stack-parser
+│   ├── es-abstract
+│   ├── es-array-method-boxes-properly
+│   ├── es-define-property
+│   ├── es-errors
+│   ├── es-iterator-helpers
+│   ├── es-module-lexer
+│   ├── es-object-atoms
+│   ├── es-set-tostringtag
+│   ├── es-shim-unscopables
+│   ├── es-to-primitive
+│   ├── escalade
+│   ├── escape-html
+│   ├── escape-string-regexp
+│   ├── escodegen
+│   ├── eslint
+│   ├── eslint-config-react-app
+│   ├── eslint-import-resolver-node
+│   ├── eslint-module-utils
+│   ├── eslint-plugin-flowtype
+│   ├── eslint-plugin-import
+│   ├── eslint-plugin-jest
+│   ├── eslint-plugin-jsx-a11y
+│   ├── eslint-plugin-react
+│   ├── eslint-plugin-react-hooks
+│   ├── eslint-plugin-testing-library
+│   ├── eslint-scope
+│   ├── eslint-visitor-keys
+│   ├── eslint-webpack-plugin
+│   ├── espree
+│   ├── esprima
+│   ├── esquery
+│   ├── esrecurse
+│   ├── estraverse
+│   ├── estree-walker
+│   ├── esutils
+│   ├── etag
+│   ├── eventemitter3
+│   ├── events
+│   ├── execa
+│   ├── exit
+│   ├── expect
+│   ├── express
+│   ├── fast-deep-equal
+│   ├── fast-glob
+│   ├── fast-json-stable-stringify
+│   ├── fast-levenshtein
+│   ├── fast-uri
+│   ├── fastq
+│   ├── faye-websocket
+│   ├── fb-watchman
+│   ├── file-entry-cache
+│   ├── file-loader
+│   ├── filelist
+│   ├── filesize
+│   ├── fill-range
+│   ├── finalhandler
+│   ├── find-cache-dir
+│   ├── find-up
+│   ├── flat-cache
+│   ├── flatted
+│   ├── follow-redirects
+│   ├── for-each
+│   ├── foreground-child
+│   ├── fork-ts-checker-webpack-plugin
+│   ├── form-data
+│   ├── forwarded
+│   ├── fraction.js
+│   ├── fresh
+│   ├── fs-extra
+│   ├── fs-monkey
+│   ├── fs.realpath
+│   ├── fsevents
+│   ├── function-bind
+│   ├── function.prototype.name
+│   ├── functions-have-names
+│   ├── gensync
+│   ├── get-caller-file
+│   ├── get-intrinsic
+│   ├── get-own-enumerable-property-symbols
+│   ├── get-package-type
+│   ├── get-proto
+│   ├── get-stream
+│   ├── get-symbol-description
+│   ├── glob
+│   ├── glob-parent
+│   ├── glob-to-regexp
+│   ├── global-modules
+│   ├── global-prefix
+│   ├── globals
+│   ├── globalthis
+│   ├── globby
+│   ├── gopd
+│   ├── graceful-fs
+│   ├── graphemer
+│   ├── gzip-size
+│   ├── handle-thing
+│   ├── harmony-reflect
+│   ├── has-bigints
+│   ├── has-flag
+│   ├── has-property-descriptors
+│   ├── has-proto
+│   ├── has-symbols
+│   ├── has-tostringtag
+│   ├── hasown
+│   ├── he
+│   ├── hoopy
+│   ├── hpack.js
+│   ├── html-encoding-sniffer
+│   ├── html-entities
+│   ├── html-escaper
+│   ├── html-minifier-terser
+│   ├── html-webpack-plugin
+│   ├── htmlparser2
+│   ├── http-deceiver
+│   ├── http-errors
+│   ├── http-parser-js
+│   ├── http-proxy
+│   ├── http-proxy-agent
+│   ├── http-proxy-middleware
+│   ├── https-proxy-agent
+│   ├── human-signals
+│   ├── iconv-lite
+│   ├── icss-utils
+│   ├── idb
+│   ├── identity-obj-proxy
+│   ├── ignore
+│   ├── immer
+│   ├── import-fresh
+│   ├── import-local
+│   ├── imurmurhash
+│   ├── inflight
+│   ├── inherits
+│   ├── ini
+│   ├── internal-slot
+│   ├── ipaddr.js
+│   ├── is-array-buffer
+│   ├── is-arrayish
+│   ├── is-async-function
+│   ├── is-bigint
+│   ├── is-binary-path
+│   ├── is-boolean-object
+│   ├── is-callable
+│   ├── is-core-module
+│   ├── is-data-view
+│   ├── is-date-object
+│   ├── is-docker
+│   ├── is-extglob
+│   ├── is-finalizationregistry
+│   ├── is-fullwidth-code-point
+│   ├── is-generator-fn
+│   ├── is-generator-function
+│   ├── is-glob
+│   ├── is-map
+│   ├── is-module
+│   ├── is-negative-zero
+│   ├── is-number
+│   ├── is-number-object
+│   ├── is-obj
+│   ├── is-path-inside
+│   ├── is-plain-obj
+│   ├── is-potential-custom-element-name
+│   ├── is-regex
+│   ├── is-regexp
+│   ├── is-root
+│   ├── is-set
+│   ├── is-shared-array-buffer
+│   ├── is-stream
+│   ├── is-string
+│   ├── is-symbol
+│   ├── is-typed-array
+│   ├── is-typedarray
+│   ├── is-weakmap
+│   ├── is-weakref
+│   ├── is-weakset
+│   ├── is-wsl
+│   ├── isarray
+│   ├── isexe
+│   ├── istanbul-lib-coverage
+│   ├── istanbul-lib-instrument
+│   ├── istanbul-lib-report
+│   ├── istanbul-lib-source-maps
+│   ├── istanbul-reports
+│   ├── iterator.prototype
+│   ├── jackspeak
+│   ├── jake
+│   ├── jest
+│   ├── jest-changed-files
+│   ├── jest-circus
+│   ├── jest-cli
+│   ├── jest-config
+│   ├── jest-diff
+│   ├── jest-docblock
+│   ├── jest-each
+│   ├── jest-environment-jsdom
+│   ├── jest-environment-node
+│   ├── jest-get-type
+│   ├── jest-haste-map
+│   ├── jest-jasmine2
+│   ├── jest-leak-detector
+│   ├── jest-matcher-utils
+│   ├── jest-message-util
+│   ├── jest-mock
+│   ├── jest-pnp-resolver
+│   ├── jest-regex-util
+│   ├── jest-resolve
+│   ├── jest-resolve-dependencies
+│   ├── jest-runner
+│   ├── jest-runtime
+│   ├── jest-serializer
+│   ├── jest-snapshot
+│   ├── jest-util
+│   ├── jest-validate
+│   ├── jest-watch-typeahead
+│   ├── jest-watcher
+│   ├── jest-worker
+│   ├── jiti
+│   ├── js-tokens
+│   ├── js-yaml
+│   ├── jsdom
+│   ├── jsesc
+│   ├── json-buffer
+│   ├── json-parse-even-better-errors
+│   ├── json-schema
+│   ├── json-schema-traverse
+│   ├── json-stable-stringify-without-jsonify
+│   ├── json5
+│   ├── jsonfile
+│   ├── jsonpath
+│   ├── jsonpointer
+│   ├── jsx-ast-utils
+│   ├── keyv
+│   ├── kind-of
+│   ├── kleur
+│   ├── klona
+│   ├── language-subtag-registry
+│   ├── language-tags
+│   ├── launch-editor
+│   ├── leven
+│   ├── levn
+│   ├── lilconfig
+│   ├── lines-and-columns
+│   ├── loader-runner
+│   ├── loader-utils
+│   ├── locate-path
+│   ├── lodash
+│   ├── lodash.debounce
+│   ├── lodash.memoize
+│   ├── lodash.merge
+│   ├── lodash.sortby
+│   ├── lodash.uniq
+│   ├── loose-envify
+│   ├── lower-case
+│   ├── lru-cache
+│   ├── magic-string
+│   ├── make-dir
+│   ├── makeerror
+│   ├── math-intrinsics
+│   ├── mdn-data
+│   ├── media-typer
+│   ├── memfs
+│   ├── merge-descriptors
+│   ├── merge-stream
+│   ├── merge2
+│   ├── methods
+│   ├── micromatch
+│   ├── mime
+│   ├── mime-db
+│   ├── mime-types
+│   ├── mimic-fn
+│   ├── mini-css-extract-plugin
+│   ├── minimalistic-assert
+│   ├── minimatch
+│   ├── minimist
+│   ├── minipass
+│   ├── mkdirp
+│   ├── ms
+│   ├── multicast-dns
+│   ├── mz
+│   ├── nanoid
+│   ├── natural-compare
+│   ├── natural-compare-lite
+│   ├── negotiator
+│   ├── neo-async
+│   ├── no-case
+│   ├── node-forge
+│   ├── node-int64
+│   ├── node-releases
+│   ├── normalize-path
+│   ├── normalize-range
+│   ├── normalize-url
+│   ├── npm-run-path
+│   ├── nth-check
+│   ├── nwsapi
+│   ├── object-assign
+│   ├── object-hash
+│   ├── object-inspect
+│   ├── object-keys
+│   ├── object.assign
+│   ├── object.entries
+│   ├── object.fromentries
+│   ├── object.getownpropertydescriptors
+│   ├── object.groupby
+│   ├── object.values
+│   ├── obuf
+│   ├── on-finished
+│   ├── on-headers
+│   ├── once
+│   ├── onetime
+│   ├── open
+│   ├── optionator
+│   ├── own-keys
+│   ├── p-limit
+│   ├── p-locate
+│   ├── p-retry
+│   ├── p-try
+│   ├── package-json-from-dist
+│   ├── param-case
+│   ├── parent-module
+│   ├── parse-json
+│   ├── parse5
+│   ├── parseurl
+│   ├── pascal-case
+│   ├── path-exists
+│   ├── path-is-absolute
+│   ├── path-key
+│   ├── path-parse
+│   ├── path-scurry
+│   ├── path-to-regexp
+│   ├── path-type
+│   ├── performance-now
+│   ├── picocolors
+│   ├── picomatch
+│   ├── pify
+│   ├── pirates
+│   ├── pkg-dir
+│   ├── pkg-up
+│   ├── pngjs
+│   ├── possible-typed-array-names
+│   ├── postcss
+│   ├── postcss-attribute-case-insensitive
+│   ├── postcss-browser-comments
+│   ├── postcss-calc
+│   ├── postcss-clamp
+│   ├── postcss-color-functional-notation
+│   ├── postcss-color-hex-alpha
+│   ├── postcss-color-rebeccapurple
+│   ├── postcss-colormin
+│   ├── postcss-convert-values
+│   ├── postcss-custom-media
+│   ├── postcss-custom-properties
+│   ├── postcss-custom-selectors
+│   ├── postcss-dir-pseudo-class
+│   ├── postcss-discard-comments
+│   ├── postcss-discard-duplicates
+│   ├── postcss-discard-empty
+│   ├── postcss-discard-overridden
+│   ├── postcss-double-position-gradients
+│   ├── postcss-env-function
+│   ├── postcss-flexbugs-fixes
+│   ├── postcss-focus-visible
+│   ├── postcss-focus-within
+│   ├── postcss-font-variant
+│   ├── postcss-gap-properties
+│   ├── postcss-image-set-function
+│   ├── postcss-import
+│   ├── postcss-initial
+│   ├── postcss-js
+│   ├── postcss-lab-function
+│   ├── postcss-load-config
+│   ├── postcss-loader
+│   ├── postcss-logical
+│   ├── postcss-media-minmax
+│   ├── postcss-merge-longhand
+│   ├── postcss-merge-rules
+│   ├── postcss-minify-font-values
+│   ├── postcss-minify-gradients
+│   ├── postcss-minify-params
+│   ├── postcss-minify-selectors
+│   ├── postcss-modules-extract-imports
+│   ├── postcss-modules-local-by-default
+│   ├── postcss-modules-scope
+│   ├── postcss-modules-values
+│   ├── postcss-nested
+│   ├── postcss-nesting
+│   ├── postcss-normalize
+│   ├── postcss-normalize-charset
+│   ├── postcss-normalize-display-values
+│   ├── postcss-normalize-positions
+│   ├── postcss-normalize-repeat-style
+│   ├── postcss-normalize-string
+│   ├── postcss-normalize-timing-functions
+│   ├── postcss-normalize-unicode
+│   ├── postcss-normalize-url
+│   ├── postcss-normalize-whitespace
+│   ├── postcss-opacity-percentage
+│   ├── postcss-ordered-values
+│   ├── postcss-overflow-shorthand
+│   ├── postcss-page-break
+│   ├── postcss-place
+│   ├── postcss-preset-env
+│   ├── postcss-pseudo-class-any-link
+│   ├── postcss-reduce-initial
+│   ├── postcss-reduce-transforms
+│   ├── postcss-replace-overflow-wrap
+│   ├── postcss-selector-not
+│   ├── postcss-selector-parser
+│   ├── postcss-svgo
+│   ├── postcss-unique-selectors
+│   ├── postcss-value-parser
+│   ├── prelude-ls
+│   ├── pretty-bytes
+│   ├── pretty-error
+│   ├── pretty-format
+│   ├── process-nextick-args
+│   ├── promise
+│   ├── prompts
+│   ├── prop-types
+│   ├── proxy-addr
+│   ├── proxy-from-env
+│   ├── psl
+│   ├── punycode
+│   ├── q
+│   ├── qr.js
+│   ├── qrcode
+│   ├── qs
+│   ├── querystringify
+│   ├── queue-microtask
+│   ├── raf
+│   ├── randombytes
+│   ├── range-parser
+│   ├── raw-body
+│   ├── react
+│   ├── react-app-polyfill
+│   ├── react-dev-utils
+│   ├── react-dom
+│   ├── react-error-overlay
+│   ├── react-is
+│   ├── react-qr-code
+│   ├── react-refresh
+│   ├── react-router
+│   ├── react-router-dom
+│   ├── react-scripts
+│   ├── read-cache
+│   ├── readable-stream
+│   ├── readdirp
+│   ├── recursive-readdir
+│   ├── reflect.getprototypeof
+│   ├── regenerate
+│   ├── regenerate-unicode-properties
+│   ├── regenerator-runtime
+│   ├── regex-parser
+│   ├── regexp.prototype.flags
+│   ├── regexpu-core
+│   ├── regjsgen
+│   ├── regjsparser
+│   ├── relateurl
+│   ├── renderkid
+│   ├── require-directory
+│   ├── require-from-string
+│   ├── require-main-filename
+│   ├── requires-port
+│   ├── resolve
+│   ├── resolve-cwd
+│   ├── resolve-from
+│   ├── resolve-url-loader
+│   ├── resolve.exports
+│   ├── retry
+│   ├── reusify
+│   ├── rimraf
+│   ├── rollup
+│   ├── rollup-plugin-terser
+│   ├── run-parallel
+│   ├── safe-array-concat
+│   ├── safe-buffer
+│   ├── safe-push-apply
+│   ├── safe-regex-test
+│   ├── safer-buffer
+│   ├── sanitize.css
+│   ├── sass-loader
+│   ├── sax
+│   ├── saxes
+│   ├── scheduler
+│   ├── schema-utils
+│   ├── select-hose
+│   ├── selfsigned
+│   ├── semver
+│   ├── send
+│   ├── serialize-javascript
+│   ├── serve-index
+│   ├── serve-static
+│   ├── set-blocking
+│   ├── set-function-length
+│   ├── set-function-name
+│   ├── set-proto
+│   ├── setprototypeof
+│   ├── shebang-command
+│   ├── shebang-regex
+│   ├── shell-quote
+│   ├── side-channel
+│   ├── side-channel-list
+│   ├── side-channel-map
+│   ├── side-channel-weakmap
+│   ├── signal-exit
+│   ├── sisteransi
+│   ├── slash
+│   ├── sockjs
+│   ├── source-list-map
+│   ├── source-map
+│   ├── source-map-js
+│   ├── source-map-loader
+│   ├── source-map-support
+│   ├── sourcemap-codec
+│   ├── spdy
+│   ├── spdy-transport
+│   ├── sprintf-js
+│   ├── stable
+│   ├── stack-utils
+│   ├── stackframe
+│   ├── static-eval
+│   ├── statuses
+│   ├── stop-iteration-iterator
+│   ├── string_decoder
+│   ├── string-length
+│   ├── string-natural-compare
+│   ├── string-width
+│   ├── string-width-cjs
+│   ├── string.prototype.includes
+│   ├── string.prototype.matchall
+│   ├── string.prototype.repeat
+│   ├── string.prototype.trim
+│   ├── string.prototype.trimend
+│   ├── string.prototype.trimstart
+│   ├── stringify-object
+│   ├── strip-ansi
+│   ├── strip-ansi-cjs
+│   ├── strip-bom
+│   ├── strip-comments
+│   ├── strip-final-newline
+│   ├── strip-json-comments
+│   ├── style-loader
+│   ├── stylehacks
+│   ├── sucrase
+│   ├── supports-color
+│   ├── supports-hyperlinks
+│   ├── supports-preserve-symlinks-flag
+│   ├── svg-parser
+│   ├── svgo
+│   ├── symbol-tree
+│   ├── tailwindcss
+│   ├── tapable
+│   ├── temp-dir
+│   ├── tempy
+│   ├── terminal-link
+│   ├── terser
+│   ├── terser-webpack-plugin
+│   ├── test-exclude
+│   ├── text-table
+│   ├── thenify
+│   ├── thenify-all
+│   ├── throat
+│   ├── thunky
+│   ├── tmpl
+│   ├── to-regex-range
+│   ├── toidentifier
+│   ├── tough-cookie
+│   ├── tr46
+│   ├── tryer
+│   ├── ts-interface-checker
+│   ├── tsconfig-paths
+│   ├── tslib
+│   ├── tsutils
+│   ├── type-check
+│   ├── type-detect
+│   ├── type-fest
+│   ├── type-is
+│   ├── typed-array-buffer
+│   ├── typed-array-byte-length
+│   ├── typed-array-byte-offset
+│   ├── typed-array-length
+│   ├── typedarray-to-buffer
+│   ├── typescript
+│   ├── unbox-primitive
+│   ├── underscore
+│   ├── undici-types
+│   ├── unicode-canonical-property-names-ecmascript
+│   ├── unicode-match-property-ecmascript
+│   ├── unicode-match-property-value-ecmascript
+│   ├── unicode-property-aliases-ecmascript
+│   ├── unique-string
+│   ├── universalify
+│   ├── unpipe
+│   ├── unquote
+│   ├── upath
+│   ├── update-browserslist-db
+│   ├── uri-js
+│   ├── url-parse
+│   ├── util-deprecate
+│   ├── util.promisify
+│   ├── utila
+│   ├── utils-merge
+│   ├── uuid
+│   ├── v8-to-istanbul
+│   ├── vary
+│   ├── w3c-hr-time
+│   ├── w3c-xmlserializer
+│   ├── walker
+│   ├── watchpack
+│   ├── wbuf
+│   ├── webidl-conversions
+│   ├── webpack
+│   ├── webpack-dev-middleware
+│   ├── webpack-dev-server
+│   ├── webpack-manifest-plugin
+│   ├── webpack-sources
+│   ├── websocket-driver
+│   ├── websocket-extensions
+│   ├── whatwg-encoding
+│   ├── whatwg-fetch
+│   ├── whatwg-mimetype
+│   ├── whatwg-url
+│   ├── which
+│   ├── which-boxed-primitive
+│   ├── which-builtin-type
+│   ├── which-collection
+│   ├── which-module
+│   ├── which-typed-array
+│   ├── word-wrap
+│   ├── workbox-background-sync
+│   ├── workbox-broadcast-update
+│   ├── workbox-build
+│   ├── workbox-cacheable-response
+│   ├── workbox-core
+│   ├── workbox-expiration
+│   ├── workbox-google-analytics
+│   ├── workbox-navigation-preload
+│   ├── workbox-precaching
+│   ├── workbox-range-requests
+│   ├── workbox-recipes
+│   ├── workbox-routing
+│   ├── workbox-strategies
+│   ├── workbox-streams
+│   ├── workbox-sw
+│   ├── workbox-webpack-plugin
+│   ├── workbox-window
+│   ├── wrap-ansi
+│   ├── wrap-ansi-cjs
+│   ├── wrappy
+│   ├── write-file-atomic
+│   ├── ws
+│   ├── xml-name-validator
+│   ├── xmlchars
+│   ├── y18n
+│   ├── yallist
+│   ├── yaml
+│   ├── yargs
+│   ├── yargs-parser
+│   └── yocto-queue
+├── package-lock.json
+├── package.json
+├── public
+│   ├── favicon.ico
+│   ├── index.html
+│   ├── logo192.png
+│   ├── logo512.png
+│   ├── manifest.json
+│   └── robots.txt
+├── README.md
+└── src
+    ├── Admin.jsx
+    ├── AdminEdit.jsx
+    ├── AdminList.jsx
+    ├── api.js
+    ├── App.css
+    ├── App.jsx
+    ├── App.test.js
+    ├── index.css
+    ├── index.js
+    ├── locale
+    ├── logo.svg
+    ├── Participant.jsx
+    ├── PrizeList.jsx
+    ├── QRPage.jsx
+    ├── reportWebVitals.js
+    └── setupTests.js
+
+885 directories, 24 files
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+ごめん！パス間違えてた。**`Admin.jsx` は `frontend/src/Admin.jsx`** ですね。  
+下のコードはその場所用に書き直し（置き換え）です。既存の `AdminList.jsx` / `AdminEdit.jsx` は触らずOK。管理系APIに必要な **`x-admin-secret` をUIから入力→localStorage保存→全管理APIに自動付与** するようにしてあります。
+
+> APIベースURLは `src/api.js` に `API_BASE` がある前提でそれを使用。無い場合は `REACT_APP_API_BASE` → 最後に `http://localhost:3001` をフォールバックします。
+
+### 置き換え先
+`frontend/src/Admin.jsx`
+
+```jsx
+import React, { useEffect, useState } from "react";
+let API = "http://localhost:3001";
+try {
+  // 存在すれば使う（無ければ catch で無視）
+  // eslint-disable-next-line import/no-unresolved
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require("./api");
+  if (mod && mod.API_BASE) API = mod.API_BASE;
+} catch (_) {
+  if (process.env.REACT_APP_API_BASE) API = process.env.REACT_APP_API_BASE;
+}
+
+function fmtJst(s) {
+  return s ? s.replace(/-/g, "/") : "-";
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState([]);
+  const [adminSecret, setAdminSecret] = useState(
+    localStorage.getItem("ADMIN_SECRET") || ""
+  );
+
+  // 作成フォーム
+  const [createForm, setCreateForm] = useState({
+    id: "",
+    name: "",
+    jst: "",
+  });
+
+  // CSV一括
+  const [csv, setCsv] = useState(null);
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  const [csvMode, setCsvMode] = useState("insert_only"); // insert_only | upsert
+
+  // 単票UPSERT
+  const [uPrizeId, setUPrizeId] = useState("");
+  const [uEntryNumber, setUEntryNumber] = useState("");
+  const [uPassword, setUPassword] = useState("");
+  const [uIsWinner, setUIsWinner] = useState(false);
+
+  const authHeaders = adminSecret ? { "x-admin-secret": adminSecret } : {};
+
+  async function load() {
+    const r = await fetch(`${API}/api/prizes`, { credentials: "include" });
+    const j = await r.json();
+    setPrizes(j);
+  }
+  useEffect(() => { load(); }, []);
+
+  function saveSecret() {
+    localStorage.setItem("ADMIN_SECRET", adminSecret);
+    alert("管理シークレットを保存しました");
+  }
+
+  async function createPrize() {
+    const body = {
+      id: createForm.id.trim(),
+      name: createForm.name.trim(),
+      result_time_jst: createForm.jst.trim(),
+    };
+    if (!body.id || !body.name || !body.result_time_jst) {
+      alert("id / name / 公開日時(JST) を入力してください");
+      return;
+    }
+    const r = await fetch(`${API}/api/prizes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`作成失敗: ${j.error || r.statusText}`);
+    } else {
+      alert("作成しました");
+      setCreateForm({ id: "", name: "", jst: "" });
+      load();
+    }
+  }
+
+  async function publishNow(id) {
+    const r = await fetch(`${API}/api/prizes/${id}/publish_now`, {
+      method: "POST",
+      headers: { ...authHeaders },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`公開失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(`公開時刻を現在に更新しました: ${fmtJst(j.jst_view_from_utc)}`);
+      load();
+    }
+  }
+
+  async function uploadCsv() {
+    if (!csv || !csvPrizeId) {
+      alert("賞品ID と CSV を指定してください");
+      return;
+    }
+    const fd = new FormData();
+    fd.append("prizeId", csvPrizeId.trim());
+    fd.append("mode", csvMode); // サーバ側で insert_only / upsert を切替
+    fd.append("file", csv);
+
+    const r = await fetch(`${API}/api/entries/bulk`, {
+      method: "POST",
+      headers: { ...authHeaders }, // FormData のとき Content-Type は自動
+      body: fd,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`一括投入失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(
+        `一括投入: 成功 ${j.inserted ?? 0} / 既存 ${j.skipped ?? 0} / 更新 ${j.updated ?? 0}`
+      );
+    }
+  }
+
+  async function upsertEntryManual() {
+    if (!uPrizeId || !uEntryNumber || !uPassword) {
+      alert("賞品ID / 抽選番号 / パスワード を入力してください");
+      return;
+    }
+    const body = {
+      prize_id: uPrizeId.trim(),
+      entry_number: uEntryNumber.trim(),
+      password: uPassword,
+      is_winner: !!uIsWinner,
+    };
+    const r = await fetch(`${API}/api/entries/upsert`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`UPSERT失敗: ${j.error || r.statusText}`);
+    } else {
+      alert(
+        `UPSERT成功: id=${j.id} / ${j.entry_number} → ${
+          j.is_winner ? "当選" : "落選"
+        }`
+      );
+    }
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h1>管理</h1>
+
+      <section style={{ marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 12 }}>
+        <h2>管理シークレット</h2>
+        <div>
+          <input
+            style={{ width: 360 }}
+            type="password"
+            placeholder="x-admin-secret に送る値"
+            value={adminSecret}
+            onChange={(e) => setAdminSecret(e.target.value)}
+          />
+          <button onClick={saveSecret} style={{ marginLeft: 8 }}>
+            保存
+          </button>
+        </div>
+        <div style={{ color: "#666", marginTop: 6 }}>
+          この値は <code>localStorage.ADMIN_SECRET</code> に保存され、管理APIのヘッダに付与されます。
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>賞品の新規作成</h2>
+        <div>賞品ID：<input value={createForm.id} onChange={e => setCreateForm({ ...createForm, id: e.target.value })} placeholder="例: B002" /></div>
+        <div>賞品名：<input value={createForm.name} onChange={e => setCreateForm({ ...createForm, name: e.target.value })} placeholder="例: ○○賞" /></div>
+        <div>
+          公開日時（JST）：<input
+            value={createForm.jst}
+            onChange={e => setCreateForm({ ...createForm, jst: e.target.value })}
+            placeholder="YYYY-MM-DD HH:mm"
+          />
+        </div>
+        <button onClick={createPrize}>作成する</button>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>参加者エントリーの一括投入（CSV）</h2>
+        <div>対象の賞品ID：<input value={csvPrizeId} onChange={e => setCsvPrizeId(e.target.value)} placeholder="例: B001" /></div>
+        <div style={{ marginTop: 6 }}>
+          重複時の動作：
+          <label><input type="radio" name="csvMode" value="insert_only" checked={csvMode==="insert_only"} onChange={() => setCsvMode("insert_only")} /> 新規のみ</label>{" "}
+          <label><input type="radio" name="csvMode" value="upsert" checked={csvMode==="upsert"} onChange={() => setCsvMode("upsert")} /> UPSERT（上書き）</label>
+        </div>
+        <div style={{ marginTop: 6 }}><input type="file" accept=".csv" onChange={e => setCsv(e.target.files?.[0] ?? null)} /></div>
+        <div style={{ marginTop: 6 }}><button onClick={uploadCsv}>投入する</button></div>
+        <div style={{ marginTop: 8, color: "#555" }}>
+          CSV例：
+          <pre style={{ background:"#f6f6f6", padding:8, marginTop:6 }}>
+entry_number,password,is_winner
+001,1111,true
+002,2222,false
+          </pre>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>単票 UPSERT（手動）</h2>
+        <div>賞品ID：<input value={uPrizeId} onChange={e => setUPrizeId(e.target.value)} placeholder="例: B001" /></div>
+        <div>抽選番号：<input value={uEntryNumber} onChange={e => setUEntryNumber(e.target.value)} placeholder="例: 001" /></div>
+        <div>パスワード：<input value={uPassword} onChange={e => setUPassword(e.target.value)} /></div>
+        <div>当選？ <input type="checkbox" checked={uIsWinner} onChange={e => setUIsWinner(e.target.checked)} /></div>
+        <button onClick={upsertEntryManual}>UPSERT 実行</button>
+      </section>
+
+      <section>
+        <h2>賞品一覧</h2>
+        {prizes.map(p => (
+          <div key={p.id} style={{ border:"1px solid #ddd", padding:12, marginBottom:8 }}>
+            <div style={{ fontWeight:"bold" }}>{p.id} {p.name}</div>
+            <div>公開日: {fmtJst(p.jst_view_from_utc)}</div>
+            <div style={{ marginTop:8 }}>
+              <a href={`/p?prizeId=${encodeURIComponent(p.id)}`} target="_blank" rel="noreferrer">参加者ページを開く</a>{" "}
+              <button onClick={() => publishNow(p.id)}>公開時刻を今にする</button>
+            </div>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+```
+
+### 最小動作チェック
+1) ブラウザで `/admin` を開く  
+2) 画面上部の「管理シークレット」に **サーバ側と同じ ADMIN_SECRET** を貼って「保存」  
+3) 「賞品の新規作成」「CSV一括投入」「単票UPSERT」「公開時刻を今にする」が 200/OK で動くこと
+
+もし `src/api.js` に `API_BASE` が無い場合は、環境変数で  
+`REACT_APP_API_BASE=http://localhost:3001` を入れるか、上の `API` 初期値を固定で変えてください。
+
+他にも直したいファイルがあればパスに合わせて出し直します！
+
+---
+
+user:
+現在のAdmin.jsxは下記。下記を書き換えて
+
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import QRCode from "react-qr-code";
+import * as QR from "qrcode";
+
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+const ADMIN_KEY_STORAGE = "distribution-lottery/admin/secret";
+
+/** "2025-08-19 13:00" → "公開日: 2025/08/19 13:00" */
+function formatJstDate(str) {
+  try {
+    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    const [datePart, timePartRaw] = str.trim().split(/\s+/);
+    const [y, m, d] = datePart.split("-");
+    const timePart = (timePartRaw || "").slice(0, 5);
+    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
+    return `公開日: ${y}/${m}/${d} ${timePart}`;
+  } catch {
+    return `公開日: ${str}`;
+  }
+}
+
+function jstLocalInputValue(offsetMinutes = 60) {
+  const now = new Date();
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000 + offsetMinutes * 60 * 1000;
+  const jst = new Date(jstMs);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(jst.getUTCDate()).padStart(2, "0");
+  const hh = String(jst.getUTCHours()).padStart(2, "0");
+  const mm = String(jst.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+/** CSVを配列に（ヘッダ: entry_number,password,is_winner） */
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((s) => s.trim());
+  const idx_en = headers.indexOf("entry_number");
+  const idx_pw = headers.indexOf("password");
+  const idx_win = headers.indexOf("is_winner");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const en = (cols[idx_en] ?? "").trim();
+    const pw = (cols[idx_pw] ?? "").trim();
+    const winRaw = (cols[idx_win] ?? "").trim().toLowerCase();
+    const win = ["true", "1", "yes", "y", "t"].includes(winRaw);
+    if (en || pw) rows.push({ entry_number: en, password: pw, is_winner: win });
+  }
+  return rows;
+}
+
+// 管理API用の fetch（x-admin-secret を自動付与）
+async function adminFetch(path, options = {}) {
+  const secret = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+  const headers = Object.assign(
+    {},
+    options.headers || {},
+    { "x-admin-secret": secret }
+  );
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let body = null;
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const msg = body?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState(null);
+  const [err, setErr] = useState("");
+
+  // 管理シークレット
+  const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) || "");
+  useEffect(() => {
+    localStorage.setItem(ADMIN_KEY_STORAGE, adminSecret || "");
+  }, [adminSecret]);
+
+  // 新規作成フォーム
+  const [newId, setNewId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newJst, setNewJst] = useState(() => jstLocalInputValue(60));
+  const [creating, setCreating] = useState(false);
+  const [createMsg, setCreateMsg] = useState("");
+
+  // CSV一括投入
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  const [csvResult, setCsvResult] = useState(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [conflictPolicy, setConflictPolicy] = useState("ignore");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        const data = await res.json();
+        setPrizes(data);
+      } catch (e) {
+        setErr(String(e?.message || e));
+      }
+    })();
+  }, []);
+
+  const reloadPrizes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPrizes(data);
+    } catch (e) {
+      setErr(String(e?.message || e));
+    }
+  };
+
+  const participantUrl = (prizeId) => `${window.location.origin}/p?prizeId=${encodeURIComponent(prizeId)}`;
+
+  const downloadQR = async (p) => {
+    try {
+      const url = participantUrl(p.id);
+      const qrPngDataUrl = await QR.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 8 });
+      const img = new Image();
+      img.onload = () => {
+        const qrTarget = 256;
+        const padding = 24;
+        const textLineHeight = 18;
+        const extraTextLines = 2;
+        const extraHeight = extraTextLines * textLineHeight + padding;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = qrTarget + padding * 2;
+        canvas.height = qrTarget + padding * 2 + extraHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const x = (canvas.width - qrTarget) / 2;
+        const y = (canvas.height - extraHeight - qrTarget) / 2;
+        ctx.drawImage(img, x, y, qrTarget, qrTarget);
+
+        ctx.fillStyle = "#000";
+        ctx.font =
+          "14px 'Hiragino Sans','Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+        const textYStart = qrTarget + padding * 2 + textLineHeight / 2;
+        ctx.fillText(`賞品ID: ${p.id}`, padding, textYStart);
+        ctx.fillText(formatJstDate(p.result_time_jst), padding, textYStart + textLineHeight);
+
+        const pngUrl = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = `qr_${p.id}.png`;
+        a.click();
+      };
+      img.onerror = () => alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
+      img.src = qrPngDataUrl;
+    } catch (e) {
+      console.error("downloadQR error:", e);
+      alert("QRのPNG変換に失敗しました（例外）。コンソールを確認してください。");
+    }
+  };
+
+  // 賞品作成（管理API）
+  const createPrize = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setCreateMsg("");
+    try {
+      if (!newId || !newName || !newJst) throw new Error("ID/名前/公開日時は必須です。");
+      const jstStr = newJst.replace("T", " ");
+      await adminFetch(`/api/prizes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId.trim(), name: newName.trim(), result_time_jst: jstStr }),
+      });
+      setCreateMsg("作成しました。");
+      setNewId("");
+      setNewName("");
+      setNewJst(jstLocalInputValue(60));
+      await reloadPrizes();
+    } catch (e2) {
+      setCreateMsg(`エラー: ${e2.message}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // CSV一括投入（管理API）
+  const onCsvSelected = async (file) => {
+    setCsvResult(null);
+    if (!csvPrizeId) {
+      alert("先に対象の賞品IDを選択してください。");
+      return;
+    }
+    if (!file) return;
+    setCsvBusy(true);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
+      const data = await adminFetch(`/api/entries/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prize_id: csvPrizeId, rows, onConflict: conflictPolicy }),
+      });
+      setCsvResult(data);
+    } catch (e) {
+      setCsvResult({ error: e.message });
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const prizeOptions = useMemo(() => (Array.isArray(prizes) ? prizes : []), [prizes]);
+
+  const downloadSampleCsv = () => {
+    const sample = "entry_number,password,is_winner\n001,1111,true\n002,2222,false\n";
+    const blob = new Blob([sample], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "entries_sample.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div>
+      <h2>管理：賞品一覧</h2>
+
+      {/* 管理シークレット入力 */}
+      <div style={{ border: "1px dashed #bbb", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <label>管理シークレット（ADMIN_SECRET）
+          <input
+            type="password"
+            value={adminSecret}
+            onChange={(e) => setAdminSecret(e.target.value)}
+            placeholder="ここに管理シークレットを入力（ローカル保存）"
+            style={{ marginLeft: 8, width: 320 }}
+          />
+        </label>
+        <div style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
+          ブラウザの <code>localStorage</code> に保存され、管理APIの呼び出し時に <code>x-admin-secret</code> ヘッダで送信されます。
+          本番では配布せず、管理者のみが知る値にしてください。
+        </div>
+      </div>
+
+      {err && <p style={{ color: "red" }}>エラー: {err}</p>}
+
+      {/* 賞品作成 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <h3>賞品の新規作成</h3>
+        <form onSubmit={createPrize} style={{ display: "grid", gap: 8, maxWidth: 420 }}>
+          <label>賞品ID（例: B002）
+            <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="B002" required />
+          </label>
+          <label>賞品名
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="○○賞" required />
+          </label>
+          <label>公開日時（JST）
+            <input
+              type="datetime-local"
+              value={newJst}
+              onChange={(e) => setNewJst(e.target.value)}
+              required
+            />
+          </label>
+          <small style={{ color: "#555" }}>ヒント：初期値は<strong>現時間＋1時間（JST）</strong>の表記です。</small>
+          <button type="submit" disabled={creating}>{creating ? "作成中…" : "作成する"}</button>
+          {createMsg && <div style={{ fontSize: 12 }}>{createMsg}</div>}
+        </form>
+      </section>
+
+      {/* CSV一括投入 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <h3>参加者エントリーの一括投入（CSV）</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+          <label>対象の賞品ID
+            <select value={csvPrizeId} onChange={(e) => setCsvPrizeId(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="">-- 選択してください --</option>
+              {prizeOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id} / {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>重複時の動作
+            <select value={conflictPolicy} onChange={(e) => setConflictPolicy(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="ignore">既存を維持（新規のみ追加）</option>
+              <option value="upsert">上書き（パスワード/当落を更新）</option>
+            </select>
+          </label>
+          <input type="file" accept=".csv,text/csv" disabled={csvBusy} onChange={(e) => onCsvSelected(e.target.files?.[0])} />
+          <button type="button" onClick={downloadSampleCsv}>サンプルCSVを保存</button>
+        </div>
+        <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
+          CSVフォーマット（1行目はヘッダ必須）：
+          <pre style={{ background: "#f7f7f7", padding: 8, overflowX: "auto" }}>
+entry_number,password,is_winner
+001,1111,true
+002,2222,false
+          </pre>
+        </div>
+        {csvBusy && <div>アップロード中…</div>}
+        {csvResult && !csvResult.error && (
+          <div style={{ fontSize: 13 }}>
+            追加: {csvResult.inserted} / 更新: {csvResult.updated} / スキップ: {csvResult.skipped}
+            {csvResult.errors?.length > 0 && (
+              <details style={{ marginTop: 6 }}>
+                <summary>詳細エラー（{csvResult.errors.length}件）</summary>
+                <ul>
+                  {csvResult.errors.map((e, i) => (
+                    <li key={i}>行 {e.rowIndex + 2}: {e.message}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+        {csvResult && csvResult.error && <div style={{ color: "red" }}>エラー: {csvResult.error}</div>}
+      </section>
+
+      {/* 賞品リスト */}
+      {prizes === null && <p>読み込み中…</p>}
+      {Array.isArray(prizes) && prizes.length === 0 && <p>賞品がありません。</p>}
+      {Array.isArray(prizes) && prizes.length > 0 && (
+        <ul style={{ paddingLeft: 16 }}>
+          {prizes.map((p) => (
+            <li key={p.id} style={{ marginBottom: 24, listStyle: "none", padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>
+                    <span style={{ fontFamily: "monospace" }}>{p.id}</span> {p.name}
+                  </div>
+                  <div>{formatJstDate(p.result_time_jst)}</div>
+                  <div style={{ marginTop: 8 }}>
+                    <Link to={`/p?prizeId=${encodeURIComponent(p.id)}`}>参加者ページを開く</Link>
+                  </div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <QRCode value={`${window.location.origin}/p?prizeId=${encodeURIComponent(p.id)}`} size={128} />
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={() => downloadQR(p)}>QRをPNG保存</button>
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解。`frontend/src/Admin.jsx` を**まるごと置き換え**できる完成版を用意しました。  
+以下をそのまま貼り替えてください（「公開時刻を今にする」ボタンと、**単票 UPSERT（手動）**を追加済み。管理シークレットは `localStorage` に保存して全管理APIに自動付与します）。
+
+```jsx
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import QRCode from "react-qr-code";
+import * as QR from "qrcode";
+
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+const ADMIN_KEY_STORAGE = "distribution-lottery/admin/secret";
+
+/** "2025-08-19 13:00" → "公開日: 2025/08/19 13:00" */
+function formatJstDate(str) {
+  try {
+    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    const [datePart, timePartRaw] = str.trim().split(/\s+/);
+    const [y, m, d] = datePart.split("-");
+    const timePart = (timePartRaw || "").slice(0, 5);
+    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
+    return `公開日: ${y}/${m}/${d} ${timePart}`;
+  } catch {
+    return `公開日: ${str}`;
+  }
+}
+
+/** 管理フォーム初期値: 現在のJST + 1時間 を datetime-local 形式で返す */
+function jstLocalInputValue(offsetMinutes = 60) {
+  const now = new Date();
+  // now を JST に直してから +offset 分
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000 + offsetMinutes * 60 * 1000;
+  const jst = new Date(jstMs);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(jst.getUTCDate()).padStart(2, "0");
+  const hh = String(jst.getUTCHours()).padStart(2, "0");
+  const mm = String(jst.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+/** CSVを配列に（ヘッダ: entry_number,password,is_winner） */
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((s) => s.trim());
+  const idx_en = headers.indexOf("entry_number");
+  const idx_pw = headers.indexOf("password");
+  const idx_win = headers.indexOf("is_winner");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const en = (cols[idx_en] ?? "").trim();
+    const pw = (cols[idx_pw] ?? "").trim();
+    const winRaw = (cols[idx_win] ?? "").trim().toLowerCase();
+    const win = ["true", "1", "yes", "y", "t"].includes(winRaw);
+    if (en || pw) rows.push({ entry_number: en, password: pw, is_winner: win });
+  }
+  return rows;
+}
+
+// 管理API用の fetch（x-admin-secret を自動付与）
+async function adminFetch(path, options = {}) {
+  const secret = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+  const headers = Object.assign({}, options.headers || {}, { "x-admin-secret": secret });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let body = null;
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const msg = body?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState(null);
+  const [err, setErr] = useState("");
+
+  // 管理シークレット
+  const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) || "");
+  useEffect(() => {
+    localStorage.setItem(ADMIN_KEY_STORAGE, adminSecret || "");
+  }, [adminSecret]);
+
+  // 新規作成フォーム
+  const [newId, setNewId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newJst, setNewJst] = useState(() => jstLocalInputValue(60));
+  const [creating, setCreating] = useState(false);
+  const [createMsg, setCreateMsg] = useState("");
+
+  // CSV一括投入
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  const [csvResult, setCsvResult] = useState(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [conflictPolicy, setConflictPolicy] = useState("ignore"); // ignore|upsert
+
+  // 単票 UPSERT（手動）
+  const [uPrizeId, setUPrizeId] = useState("");
+  const [uEntryNumber, setUEntryNumber] = useState("");
+  const [uPassword, setUPassword] = useState("");
+  const [uIsWinner, setUIsWinner] = useState(false);
+  const [uBusy, setUBusy] = useState(false);
+  const [uMsg, setUMsg] = useState("");
+
+  // 読み込み
+  const loadPrizes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPrizes(data);
+      setErr("");
+    } catch (e) {
+      setErr(String(e?.message || e));
+      setPrizes([]);
+    }
+  };
+  useEffect(() => { loadPrizes(); }, []);
+
+  const participantUrl = (prizeId) => `${window.location.origin}/p?prizeId=${encodeURIComponent(prizeId)}`;
+
+  // QR PNG ダウンロード（日本語ラベル付き）
+  const downloadQR = async (p) => {
+    try {
+      const url = participantUrl(p.id);
+      const qrPngDataUrl = await QR.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 8 });
+      const img = new Image();
+      img.onload = () => {
+        const qrTarget = 256;
+        const padding = 24;
+        const textLineHeight = 18;
+        const extraTextLines = 2;
+        const extraHeight = extraTextLines * textLineHeight + padding;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = qrTarget + padding * 2;
+        canvas.height = qrTarget + padding * 2 + extraHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const x = (canvas.width - qrTarget) / 2;
+        const y = (canvas.height - extraHeight - qrTarget) / 2;
+        ctx.drawImage(img, x, y, qrTarget, qrTarget);
+
+        ctx.fillStyle = "#000";
+        ctx.font = "14px 'Hiragino Sans','Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+        const textYStart = qrTarget + padding * 2 + textLineHeight / 2;
+        ctx.fillText(`賞品ID: ${p.id}`, padding, textYStart);
+        ctx.fillText(formatJstDate(p.result_time_jst), padding, textYStart + textLineHeight);
+
+        const pngUrl = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = `qr_${p.id}.png`;
+        a.click();
+      };
+      img.onerror = () => alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
+      img.src = qrPngDataUrl;
+    } catch (e) {
+      console.error("downloadQR error:", e);
+      alert("QRのPNG変換に失敗しました（例外）。コンソールを確認してください。");
+    }
+  };
+
+  // 賞品作成（管理API）
+  const createPrize = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setCreateMsg("");
+    try {
+      if (!newId || !newName || !newJst) throw new Error("ID/名前/公開日時は必須です。");
+      const jstStr = newJst.replace("T", " ");
+      await adminFetch(`/api/prizes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId.trim(), name: newName.trim(), result_time_jst: jstStr }),
+      });
+      setCreateMsg("作成しました。");
+      setNewId("");
+      setNewName("");
+      setNewJst(jstLocalInputValue(60));
+      await loadPrizes();
+    } catch (e2) {
+      setCreateMsg(`エラー: ${e2.message}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // すぐ公開ボタン
+  const publishNow = async (id) => {
+    if (!id) return;
+    try {
+      const j = await adminFetch(`/api/prizes/${encodeURIComponent(id)}/publish_now`, {
+        method: "POST",
+      });
+      alert(`公開時刻を現在に更新しました（${formatJstDate(j.jst_view_from_utc).replace("公開日: ", "")}）`);
+      await loadPrizes();
+    } catch (e) {
+      alert(`公開に失敗: ${e.message}`);
+    }
+  };
+
+  // CSV一括投入（JSONボディ版）
+  const onCsvSelected = async (file) => {
+    setCsvResult(null);
+    if (!csvPrizeId) {
+      alert("先に対象の賞品IDを選択してください。");
+      return;
+    }
+    if (!file) return;
+    setCsvBusy(true);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
+      const data = await adminFetch(`/api/entries/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prize_id: csvPrizeId, rows, onConflict: conflictPolicy }), // ignore|upsert
+      });
+      setCsvResult(data);
+    } catch (e) {
+      setCsvResult({ error: e.message });
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const prizeOptions = useMemo(() => (Array.isArray(prizes) ? prizes : []), [prizes]);
+
+  const downloadSampleCsv = () => {
+    const sample = "entry_number,password,is_winner\n001,1111,true\n002,2222,false\n";
+    const blob = new Blob([sample], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "entries_sample.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 単票 UPSERT（手動）
+  const upsertEntryManual = async () => {
+    setUBusy(true);
+    setUMsg("");
+    try {
+      if (!uPrizeId || !uEntryNumber || !uPassword) throw new Error("賞品ID / 抽選番号 / パスワード を入力してください");
+      const body = {
+        prize_id: uPrizeId.trim(),
+        entry_number: uEntryNumber.trim(),
+        password: uPassword,
+        is_winner: !!uIsWinner,
+      };
+      const j = await adminFetch(`/api/entries/upsert`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setUMsg(`UPSERT成功: id=${j.id} / ${j.entry_number} → ${j.is_winner ? "当選" : "落選"}`);
+    } catch (e) {
+      setUMsg(`エラー: ${e.message}`);
+    } finally {
+      setUBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2>管理：賞品一覧</h2>
+
+      {/* 管理シークレット入力 */}
+      <div style={{ border: "1px dashed #bbb", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <label>管理シークレット（ADMIN_SECRET）
+          <input
+            type="password"
+            value={adminSecret}
+            onChange={(e) => setAdminSecret(e.target.value)}
+            placeholder="ここに管理シークレットを入力（ローカル保存）"
+            style={{ marginLeft: 8, width: 360 }}
+          />
+        </label>
+        <div style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
+          ブラウザの <code>localStorage</code> に保存され、管理API呼び出し時に <code>x-admin-secret</code> ヘッダで送信されます。
+        </div>
+      </div>
+
+      {err && <p style={{ color: "red" }}>エラー: {err}</p>}
+
+      {/* 賞品作成 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: 520 }}>
+        <h3>賞品の新規作成</h3>
+        <form onSubmit={createPrize} style={{ display: "grid", gap: 8 }}>
+          <label>賞品ID（例: B002）
+            <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="B002" required />
+          </label>
+          <label>賞品名
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="○○賞" required />
+          </label>
+          <label>公開日時（JST）
+            <input type="datetime-local" value={newJst} onChange={(e) => setNewJst(e.target.value)} required />
+          </label>
+          <small style={{ color: "#555" }}>ヒント：初期値は<strong>現時間＋1時間（JST）</strong>の表記です。</small>
+          <div>
+            <button type="submit" disabled={creating}>{creating ? "作成中…" : "作成する"}</button>
+            {createMsg && <span style={{ marginLeft: 8, fontSize: 12 }}>{createMsg}</span>}
+          </div>
+        </form>
+      </section>
+
+      {/* CSV一括投入 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <h3>参加者エントリーの一括投入（CSV）</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+          <label>対象の賞品ID
+            <select value={csvPrizeId} onChange={(e) => setCsvPrizeId(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="">-- 選択してください --</option>
+              {prizeOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id} / {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>重複時の動作
+            <select value={conflictPolicy} onChange={(e) => setConflictPolicy(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="ignore">既存を維持（新規のみ追加）</option>
+              <option value="upsert">上書き（パスワード/当落を更新）</option>
+            </select>
+          </label>
+          <input type="file" accept=".csv,text/csv" disabled={csvBusy} onChange={(e) => onCsvSelected(e.target.files?.[0])} />
+          <button type="button" onClick={downloadSampleCsv}>サンプルCSVを保存</button>
+        </div>
+        <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
+          CSVフォーマット（1行目はヘッダ必須）：
+          <pre style={{ background: "#f7f7f7", padding: 8, overflowX: "auto" }}>
+entry_number,password,is_winner
+001,1111,true
+002,2222,false
+          </pre>
+        </div>
+        {csvBusy && <div>アップロード中…</div>}
+        {csvResult && !csvResult.error && (
+          <div style={{ fontSize: 13 }}>
+            追加: {csvResult.inserted ?? 0} / 更新: {csvResult.updated ?? 0} / スキップ: {csvResult.skipped ?? 0}
+            {csvResult.errors?.length > 0 && (
+              <details style={{ marginTop: 6 }}>
+                <summary>詳細エラー（{csvResult.errors.length}件）</summary>
+                <ul>
+                  {csvResult.errors.map((e, i) => (
+                    <li key={i}>行 {e.rowIndex + 2}: {e.message}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+        {csvResult && csvResult.error && <div style={{ color: "red" }}>エラー: {csvResult.error}</div>}
+      </section>
+
+      {/* 単票 UPSERT（CSVなしで手動） */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: 520 }}>
+        <h3>単票 UPSERT（手動）</h3>
+        <div style={{ display: "grid", gap: 8 }}>
+          <label>賞品ID
+            <input value={uPrizeId} onChange={(e) => setUPrizeId(e.target.value)} placeholder="B001" />
+          </label>
+          <label>抽選番号
+            <input value={uEntryNumber} onChange={(e) => setUEntryNumber(e.target.value)} placeholder="001" />
+          </label>
+          <label>パスワード
+            <input value={uPassword} onChange={(e) => setUPassword(e.target.value)} />
+          </label>
+          <label>
+            <input type="checkbox" checked={uIsWinner} onChange={(e) => setUIsWinner(e.target.checked)} />
+            &nbsp;当選
+          </label>
+          <div>
+            <button type="button" disabled={uBusy} onClick={upsertEntryManual}>
+              {uBusy ? "送信中…" : "UPSERT 実行"}
+            </button>
+            {uMsg && <span style={{ marginLeft: 8, fontSize: 12 }}>{uMsg}</span>}
+          </div>
+        </div>
+      </section>
+
+      {/* 賞品リスト */}
+      {prizes === null && <p>読み込み中…</p>}
+      {Array.isArray(prizes) && prizes.length === 0 && <p>賞品がありません。</p>}
+      {Array.isArray(prizes) && prizes.length > 0 && (
+        <ul style={{ paddingLeft: 16 }}>
+          {prizes.map((p) => (
+            <li key={p.id} style={{ marginBottom: 24, listStyle: "none", padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>
+                    <span style={{ fontFamily: "monospace" }}>{p.id}</span> {p.name}
+                  </div>
+                  <div>{formatJstDate(p.result_time_jst)}</div>
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <Link to={`/p?prizeId=${encodeURIComponent(p.id)}`}>参加者ページを開く</Link>
+                    <button type="button" onClick={() => publishNow(p.id)}>公開時刻を今にする</button>
+                  </div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <QRCode value={`${window.location.origin}/p?prizeId=${encodeURIComponent(p.id)}`} size={128} />
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={() => downloadQR(p)}>QRをPNG保存</button>
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+```
+
+**ポイント**
+- 管理APIはすべて `x-admin-secret` を自動で付与（`adminFetch`）。
+- 一覧カードに「公開時刻を今にする」ボタンを追加（`POST /api/prizes/:id/publish_now`）。
+- 「単票 UPSERT（手動）」を追加（`PUT /api/entries/upsert`）。
+- これまでの CSV 一括投入（JSON 版）も維持。`onConflict` は `ignore` / `upsert` を切替。
+
+貼り替え後、ブラウザで `/admin` を開き、管理シークレットを入力→保存してから動作確認してください。
+
+---
+
+user:
+公開に失敗: HTTP 404 というのは管理シークレットが入力されてないから？
+
+---
+
+system:
+
+
+---
+
+assistant:
+それはちょっと違います 🙂  
+
+**`HTTP 404` の意味**は「そのエンドポイント（URL）が存在しない」ということです。  
+一方、管理シークレットが無い／間違っている場合は **`401 Unauthorized`** が返るのが通常です。  
+
+---
+
+### 考えられる原因
+1. **バックエンドに `/api/prizes/:id/publish_now` が実装されていない**  
+   - 管理GUIのボタンは `POST /api/prizes/:id/publish_now` を呼んでいますが、サーバ側にそのルートが無ければ `404` になります。
+
+2. **URLのミス**  
+   - 例えばフロントで `API_BASE` が誤っていて `http://localhost:3001/api/prizes/...` に到達していない場合。
+
+3. **Render デプロイ環境で `/publish_now` をまだ反映していない**  
+   - ローカルで実装したけど、本番環境に push / redeploy していない、というケース。
+
+---
+
+### 切り分け方法
+- 管理シークレットが原因なら → **`401 Unauthorized`** が返る。
+- 実装が無い／URLが間違いなら → **`404 Not Found`** が返る。
+
+なので今回の **`404` は「管理シークレット未入力」ではなく、エンドポイントそのものが無い**ことが原因です。
+
+---
+
+👉 解決するには：
+- バックエンドに `/api/prizes/:id/publish_now` を追加する（例: `prizesController.publishNow` 的な実装）。  
+- デプロイ先にもそのコードを反映。  
+
+---
+
+もしよければ、こちらで **「公開時刻を今にする」API のサンプル実装（Express + PostgreSQL）** を提示できますが、出しますか？
+
+---
+
+user:
+公開時刻を今にするボタンはいまは「公開に失敗: HTTP 404」でいいってこと？
+
+---
+
+assistant:
+はい、その理解で大丈夫です 👍  
+
+今の状態ではバックエンドに **「公開時刻を今にする」API (`/api/prizes/:id/publish_now`) が存在しない**ので、ボタンを押しても `HTTP 404` になるのが仕様通りです。  
+
+---
+
+### 意図としては
+- **401 Unauthorized** → 管理シークレットが未設定／間違い。  
+- **404 Not Found** → ルート未実装。  
+
+だから、まだサーバ側を作っていないなら「404で失敗する」挙動は正しく、後でバックエンドにルートを追加すれば成功するようになります。  
+
+---
+
+### 運用チェックリスト的には
+- **今は 404 で NG** → 「この機能はまだ未実装」と認識できる。  
+- 実装完了後にもう一度試して、`200 OK` で動くことを確認。  
+
+---
+
+👉 つまり現段階では「404でいい」です。  
+
+次のステップとしては、サーバ側に `publish_now` エンドポイントを追加することになります。  
+
+実装サンプル（Express + Postgres）出しましょうか？
+
+---
+
+user:
+次お願い
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解！「公開時刻を今にする」用のバックエンドを**実装（置き換え）**します。  
+下記 **1ファイルだけ**差し替えれば動きます。
+
+---
+
+## 置き換えファイル
+
+### `~/Downloads/distribution-lottery-app/backend/routes/prizes.js`（全文置き換え）
+
+```js
+// backend/routes/prizes.js
+// 賞品 CRUD + 「公開時刻を今にする」エンドポイント
+const express = require("express");
+const router = express.Router();
+
+const pool = require("../db");
+const adminAuth = require("../middleware/adminAuth");
+const { jstToUtcIso, utcDateToJstText } = require("../time");
+
+// 共通: DBレコード -> APIレスポンス成形
+function shapePrize(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    result_time_jst: row.result_time_jst,         // 例: "2025-08-19 13:00"
+    publish_time_utc: row.publish_time_utc,       // 例: "2025-08-19T04:00:00.000Z"
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    // 表示用にUTC->JST文字列（YYYY-MM-DD HH:mm）
+    jst_view_from_utc: utcDateToJstText(row.publish_time_utc),
+  };
+}
+
+/** 一覧 */
+router.get("/", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id,name,result_time_jst,publish_time_utc,created_at,updated_at
+         FROM prizes
+         ORDER BY publish_time_utc NULLS LAST, id ASC`
+    );
+    res.json(rows.map(shapePrize));
+  } catch (e) {
+    console.error("GET /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+/** 1件取得 */
+router.get("/:id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id,name,result_time_jst,publish_time_utc,created_at,updated_at
+         FROM prizes
+        WHERE id = $1
+        LIMIT 1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(shapePrize(rows[0]));
+  } catch (e) {
+    console.error("GET /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+/** 作成（管理） */
+router.post("/", adminAuth, async (req, res) => {
+  try {
+    const { id, name, result_time_jst } = req.body || {};
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({ error: "id/name/result_time_jst are required" });
+    }
+    const publishIso = jstToUtcIso(result_time_jst); // JST文字列 → UTC ISO
+
+    const q = `
+      INSERT INTO prizes (id,name,result_time_jst,publish_time_utc,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,NOW(),NOW())
+      RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at
+    `;
+    const { rows } = await pool.query(q, [id.trim(), name.trim(), result_time_jst.trim(), publishIso]);
+    res.status(201).json(shapePrize(rows[0]));
+  } catch (e) {
+    // 重複を 409 で明示
+    if (e && e.code === "23505") {
+      return res.status(409).json({ error: "Duplicate id" });
+    }
+    console.error("POST /api/prizes error:", e);
+    res.status(500).json({ error: "Failed to create prize" });
+  }
+});
+
+/** 更新（管理） */
+router.put("/:id", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, result_time_jst } = req.body || {};
+
+    // 動的に更新カラムを組み立て
+    const sets = [];
+    const vals = [];
+    let idx = 1;
+
+    if (typeof name === "string" && name.length > 0) {
+      sets.push(`name = $${idx++}`);
+      vals.push(name.trim());
+    }
+    if (typeof result_time_jst === "string" && result_time_jst.length > 0) {
+      sets.push(`result_time_jst = $${idx++}`);
+      vals.push(result_time_jst.trim());
+      const iso = jstToUtcIso(result_time_jst.trim());
+      sets.push(`publish_time_utc = $${idx++}`);
+      vals.push(iso);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: "No updatable fields" });
+
+    sets.push("updated_at = NOW()");
+    vals.push(id);
+
+    const q = `
+      UPDATE prizes
+         SET ${sets.join(", ")}
+       WHERE id = $${idx}
+       RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at
+    `;
+    const { rows } = await pool.query(q, vals);
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(shapePrize(rows[0]));
+  } catch (e) {
+    console.error("PUT /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to update prize" });
+  }
+});
+
+/** 削除（管理） */
+router.delete("/:id", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    await pool.query("BEGIN");
+    await pool.query(`DELETE FROM entries WHERE prize_id = $1`, [id]);
+    const del = await pool.query(`DELETE FROM prizes WHERE id = $1`, [id]);
+    await pool.query("COMMIT");
+    if (del.rowCount === 0) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true, deleted: del.rowCount });
+  } catch (e) {
+    await pool.query("ROLLBACK").catch(() => {});
+    console.error("DELETE /api/prizes/:id error:", e);
+    res.status(500).json({ error: "Failed to delete prize" });
+  }
+});
+
+/** ★公開時刻を今にする（管理） */
+router.post("/:id/publish_now", adminAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const q = `
+      UPDATE prizes
+         SET publish_time_utc = NOW(),
+             updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,name,result_time_jst,publish_time_utc,created_at,updated_at
+    `;
+    const { rows } = await pool.query(q, [id]);
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(shapePrize(rows[0]));
+  } catch (e) {
+    console.error("POST /api/prizes/:id/publish_now error:", e);
+    res.status(500).json({ error: "Failed to publish now" });
+  }
+});
+
+module.exports = router;
+```
+
+---
+
+## 動作確認（コピペOK）
+
+> ターミナル区分に合わせて：  
+> - **①バックエンド用ターミナル**: 3001番で `node index.js` を実行中にしておく  
+> - **②コマンド実行用ターミナル**: 下記を実行
+
+```bash
+echo "# ADMIN を backend/.env から読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"; echo "# 長さ: ${#ADMIN}"
+
+echo "# 対象ID（例）"
+PRIZE=B9001; echo "# PRIZE=$PRIZE"
+
+echo "# 1) 公開前の状態を取得（publish_time_utc を確認）"
+curl -sS http://localhost:3001/api/prizes/$PRIZE | jq . || curl -sS http://localhost:3001/api/prizes/$PRIZE
+
+echo "# 2) 公開時刻を今にする（管理ヘッダ必須 → 200 を期待）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST \
+  -H "x-admin-secret: $ADMIN" \
+  http://localhost:3001/api/prizes/$PRIZE/publish_now
+
+echo "# 3) 反映確認（publish_time_utc が現在に近い値へ更新されているか）"
+curl -sS http://localhost:3001/api/prizes/$PRIZE | jq . || curl -sS http://localhost:3001/api/prizes/$PRIZE
+```
+
+- **200 OK** になれば成功です。  
+- もし **401 Unauthorized** → 管理シークレットが未設定/不一致です（`ADMIN_SECRET` を見直し）。  
+- もし **404 Not Found** → その `id` の賞品が存在しません（`/api/prizes` で一覧確認）。  
+
+---
+
+## フロントの挙動
+
+- すでに `Admin.jsx` 側は `POST /api/prizes/:id/publish_now` を叩く実装になっているので、このバックエンドを入れると**「公開時刻を今にする」ボタンが 200 で動作**し、フロントの一覧も再読込後に反映されます。  
+
+何か他にも追加でまとめて置き換えたいファイルがあれば、そのまま出します。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 frontend % echo "# ADMIN を backend/.env から読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"; echo "# 長さ: ${#ADMIN}"
+
+echo "# 対象ID（例）"
+PRIZE=B9001; echo "# PRIZE=$PRIZE"
+
+echo "# 1) 公開前の状態を取得（publish_time_utc を確認）"
+curl -sS http://localhost:3001/api/prizes/$PRIZE | jq . || curl -sS http://localhost:3001/api/prizes/$PRIZE
+
+echo "# 2) 公開時刻を今にする（管理ヘッダ必須 → 200 を期待）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST \
+  -H "x-admin-secret: $ADMIN" \
+  http://localhost:3001/api/prizes/$PRIZE/publish_now
+
+echo "# 3) 反映確認（publish_time_utc が現在に近い値へ更新されているか）"
+curl -sS http://localhost:3001/api/prizes/$PRIZE | jq . || curl -sS http://localhost:3001/api/prizes/$PRIZE
+# ADMIN を backend/.env から読み込む（値は表示しない）
+# 長さ: 64
+# 対象ID（例）
+# PRIZE=B9001
+# 1) 公開前の状態を取得（publish_time_utc を確認）
+{
+  "id": "B9001",
+  "name": "アップサート動作確認",
+  "result_time_jst": "2025-08-30 12:34",
+  "publish_time_utc": "2025-08-19T06:01:01.373Z",
+  "created_at": "2025-08-19T05:51:50.542Z",
+  "updated_at": "2025-08-19T06:02:01.373Z",
+  "jst_view_from_utc": "2025-08-19 15:01"
+}
+# 2) 公開時刻を今にする（管理ヘッダ必須 → 200 を期待）
+{"id":"B9001","name":"アップサート動作確認","result_time_jst":"2025-08-30 12:34","publish_time_utc":"2025-08-19T06:22:12.683Z","created_at":"2025-08-19T05:51:50.542Z","updated_at":"2025-08-19T06:22:12.683Z","jst_view_from_utc":"2025-08-19 15:22"}
+HTTP 200
+# 3) 反映確認（publish_time_utc が現在に近い値へ更新されているか）
+{
+  "id": "B9001",
+  "name": "アップサート動作確認",
+  "result_time_jst": "2025-08-30 12:34",
+  "publish_time_utc": "2025-08-19T06:22:12.683Z",
+  "created_at": "2025-08-19T05:51:50.542Z",
+  "updated_at": "2025-08-19T06:22:12.683Z",
+  "jst_view_from_utc": "2025-08-19 15:22"
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね！ログ（選択部分）を見る限り——
+
+- `x-admin-secret` は **長さ64で読めている**  
+- `POST /api/prizes/B9001/publish_now` が **HTTP 200**  
+- 直後の `GET /api/prizes/B9001` で `publish_time_utc` と `updated_at` が **今の時刻に更新済み**
+
+つまり「公開時刻を今にする」エンドポイントは**正常動作**してます 🎉
+
+### 次の最小チェック
+1. フロントの「公開時刻を今にする」ボタンで同じ挙動になるか確認  
+   - `localStorage` に `ADMIN_SECRET` 入っているか（`Admin.jsx` は自動で `x-admin-secret` を付与）。
+   - クリック後に一覧がリロードされて `publish_time_utc` が更新されること。
+2. 参加者ページ側：公開前/後のメッセージ切替（既にOKだった動作）が、API経由の公開でも反映されること。
+
+### 小ネタ（任意）
+- 管理一覧で `publish_time_utc <= now` のものに「公開済み」バッジを出すと運用が楽です。
+- 直接 SQL で時刻をいじる運用は卒業して、今後はこの API を使えば一貫します。
+
+何か詰まったログがあれば、そのまま貼ってくれればすぐ読むよ。
+
+---
+
+user:
+その小ネタ、実装できる？
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+やろう！Admin.jsx に最小差分で「公開済み」バッジを付けます。`publish_time_utc <= 現在(UTC)` のときに表示されます。
+
+### 変更点（コピペでOK）
+
+1) ヘルパー関数を先頭のユーティリティ群に追加
+```js
+/** publish_time_utc が今以前なら公開済み */
+function isPublishedUtc(publishUtc) {
+  if (!publishUtc) return false;
+  const t = Date.parse(publishUtc);
+  if (Number.isNaN(t)) return false;
+  return t <= Date.now();
+}
+
+/** 小さなステータスバッジ */
+function PublishedBadge({ published }) {
+  const base = {
+    display: "inline-block",
+    fontSize: 12,
+    padding: "2px 8px",
+    borderRadius: 999,
+    marginLeft: 8,
+  };
+  return published ? (
+    <span style={{ ...base, color: "#14532d", background: "#dcfce7", border: "1px solid #86efac" }}>
+      公開済み
+    </span>
+  ) : (
+    <span style={{ ...base, color: "#7c2d12", background: "#ffedd5", border: "1px solid #fdba74" }}>
+      未公開
+    </span>
+  );
+}
+```
+
+2) 賞品リストの各行でバッジを表示  
+（`{p.id} {p.name}` を描画しているところに追記）
+```jsx
+<div style={{ fontSize: 16, fontWeight: 600 }}>
+  <span style={{ fontFamily: "monospace" }}>{p.id}</span> {p.name}
+  <PublishedBadge published={isPublishedUtc(p.publish_time_utc)} />
+</div>
+```
+
+これだけで、一覧に「公開済み / 未公開」のバッジが出ます。  
+（`publish_time_utc` が `null` / 空 / 変な文字列なら安全側で「未公開」表示）
+
+---
+
+必要なら、未公開を上に並べ替えるオプションもすぐ足せますが、まずは最小実装でどうぞ。
+
+---
+
+user:
+未公開を上に並べ替えるオプションもつけて。
+現在のAdmin.jsxは下記なのでこれを更新して。
+
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import QRCode from "react-qr-code";
+import * as QR from "qrcode";
+
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+const ADMIN_KEY_STORAGE = "distribution-lottery/admin/secret";
+
+/** "2025-08-19 13:00" → "公開日: 2025/08/19 13:00" */
+function formatJstDate(str) {
+  try {
+    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    const [datePart, timePartRaw] = str.trim().split(/\s+/);
+    const [y, m, d] = datePart.split("-");
+    const timePart = (timePartRaw || "").slice(0, 5);
+    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
+    return `公開日: ${y}/${m}/${d} ${timePart}`;
+  } catch {
+    return `公開日: ${str}`;
+  }
+}
+
+/** 管理フォーム初期値: 現在のJST + 1時間 を datetime-local 形式で返す */
+function jstLocalInputValue(offsetMinutes = 60) {
+  const now = new Date();
+  // now を JST に直してから +offset 分
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000 + offsetMinutes * 60 * 1000;
+  const jst = new Date(jstMs);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(jst.getUTCDate()).padStart(2, "0");
+  const hh = String(jst.getUTCHours()).padStart(2, "0");
+  const mm = String(jst.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+/** CSVを配列に（ヘッダ: entry_number,password,is_winner） */
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((s) => s.trim());
+  const idx_en = headers.indexOf("entry_number");
+  const idx_pw = headers.indexOf("password");
+  const idx_win = headers.indexOf("is_winner");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const en = (cols[idx_en] ?? "").trim();
+    const pw = (cols[idx_pw] ?? "").trim();
+    const winRaw = (cols[idx_win] ?? "").trim().toLowerCase();
+    const win = ["true", "1", "yes", "y", "t"].includes(winRaw);
+    if (en || pw) rows.push({ entry_number: en, password: pw, is_winner: win });
+  }
+  return rows;
+}
+
+// 管理API用の fetch（x-admin-secret を自動付与）
+async function adminFetch(path, options = {}) {
+  const secret = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+  const headers = Object.assign({}, options.headers || {}, { "x-admin-secret": secret });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let body = null;
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const msg = body?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState(null);
+  const [err, setErr] = useState("");
+
+  // 管理シークレット
+  const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) || "");
+  useEffect(() => {
+    localStorage.setItem(ADMIN_KEY_STORAGE, adminSecret || "");
+  }, [adminSecret]);
+
+  // 新規作成フォーム
+  const [newId, setNewId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newJst, setNewJst] = useState(() => jstLocalInputValue(60));
+  const [creating, setCreating] = useState(false);
+  const [createMsg, setCreateMsg] = useState("");
+
+  // CSV一括投入
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  const [csvResult, setCsvResult] = useState(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [conflictPolicy, setConflictPolicy] = useState("ignore"); // ignore|upsert
+
+  // 単票 UPSERT（手動）
+  const [uPrizeId, setUPrizeId] = useState("");
+  const [uEntryNumber, setUEntryNumber] = useState("");
+  const [uPassword, setUPassword] = useState("");
+  const [uIsWinner, setUIsWinner] = useState(false);
+  const [uBusy, setUBusy] = useState(false);
+  const [uMsg, setUMsg] = useState("");
+
+  // 読み込み
+  const loadPrizes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPrizes(data);
+      setErr("");
+    } catch (e) {
+      setErr(String(e?.message || e));
+      setPrizes([]);
+    }
+  };
+  useEffect(() => { loadPrizes(); }, []);
+
+  const participantUrl = (prizeId) => `${window.location.origin}/p?prizeId=${encodeURIComponent(prizeId)}`;
+
+  // QR PNG ダウンロード（日本語ラベル付き）
+  const downloadQR = async (p) => {
+    try {
+      const url = participantUrl(p.id);
+      const qrPngDataUrl = await QR.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 8 });
+      const img = new Image();
+      img.onload = () => {
+        const qrTarget = 256;
+        const padding = 24;
+        const textLineHeight = 18;
+        const extraTextLines = 2;
+        const extraHeight = extraTextLines * textLineHeight + padding;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = qrTarget + padding * 2;
+        canvas.height = qrTarget + padding * 2 + extraHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const x = (canvas.width - qrTarget) / 2;
+        const y = (canvas.height - extraHeight - qrTarget) / 2;
+        ctx.drawImage(img, x, y, qrTarget, qrTarget);
+
+        ctx.fillStyle = "#000";
+        ctx.font = "14px 'Hiragino Sans','Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+        const textYStart = qrTarget + padding * 2 + textLineHeight / 2;
+        ctx.fillText(`賞品ID: ${p.id}`, padding, textYStart);
+        ctx.fillText(formatJstDate(p.result_time_jst), padding, textYStart + textLineHeight);
+
+        const pngUrl = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = `qr_${p.id}.png`;
+        a.click();
+      };
+      img.onerror = () => alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
+      img.src = qrPngDataUrl;
+    } catch (e) {
+      console.error("downloadQR error:", e);
+      alert("QRのPNG変換に失敗しました（例外）。コンソールを確認してください。");
+    }
+  };
+
+  // 賞品作成（管理API）
+  const createPrize = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setCreateMsg("");
+    try {
+      if (!newId || !newName || !newJst) throw new Error("ID/名前/公開日時は必須です。");
+      const jstStr = newJst.replace("T", " ");
+      await adminFetch(`/api/prizes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId.trim(), name: newName.trim(), result_time_jst: jstStr }),
+      });
+      setCreateMsg("作成しました。");
+      setNewId("");
+      setNewName("");
+      setNewJst(jstLocalInputValue(60));
+      await loadPrizes();
+    } catch (e2) {
+      setCreateMsg(`エラー: ${e2.message}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // すぐ公開ボタン
+  const publishNow = async (id) => {
+    if (!id) return;
+    try {
+      const j = await adminFetch(`/api/prizes/${encodeURIComponent(id)}/publish_now`, {
+        method: "POST",
+      });
+      alert(`公開時刻を現在に更新しました（${formatJstDate(j.jst_view_from_utc).replace("公開日: ", "")}）`);
+      await loadPrizes();
+    } catch (e) {
+      alert(`公開に失敗: ${e.message}`);
+    }
+  };
+
+  // CSV一括投入（JSONボディ版）
+  const onCsvSelected = async (file) => {
+    setCsvResult(null);
+    if (!csvPrizeId) {
+      alert("先に対象の賞品IDを選択してください。");
+      return;
+    }
+    if (!file) return;
+    setCsvBusy(true);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
+      const data = await adminFetch(`/api/entries/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prize_id: csvPrizeId, rows, onConflict: conflictPolicy }), // ignore|upsert
+      });
+      setCsvResult(data);
+    } catch (e) {
+      setCsvResult({ error: e.message });
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const prizeOptions = useMemo(() => (Array.isArray(prizes) ? prizes : []), [prizes]);
+
+  const downloadSampleCsv = () => {
+    const sample = "entry_number,password,is_winner\n001,1111,true\n002,2222,false\n";
+    const blob = new Blob([sample], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "entries_sample.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 単票 UPSERT（手動）
+  const upsertEntryManual = async () => {
+    setUBusy(true);
+    setUMsg("");
+    try {
+      if (!uPrizeId || !uEntryNumber || !uPassword) throw new Error("賞品ID / 抽選番号 / パスワード を入力してください");
+      const body = {
+        prize_id: uPrizeId.trim(),
+        entry_number: uEntryNumber.trim(),
+        password: uPassword,
+        is_winner: !!uIsWinner,
+      };
+      const j = await adminFetch(`/api/entries/upsert`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setUMsg(`UPSERT成功: id=${j.id} / ${j.entry_number} → ${j.is_winner ? "当選" : "落選"}`);
+    } catch (e) {
+      setUMsg(`エラー: ${e.message}`);
+    } finally {
+      setUBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2>管理：賞品一覧</h2>
+
+      {/* 管理シークレット入力 */}
+      <div style={{ border: "1px dashed #bbb", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <label>管理シークレット（ADMIN_SECRET）
+          <input
+            type="password"
+            value={adminSecret}
+            onChange={(e) => setAdminSecret(e.target.value)}
+            placeholder="ここに管理シークレットを入力（ローカル保存）"
+            style={{ marginLeft: 8, width: 360 }}
+          />
+        </label>
+        <div style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
+          ブラウザの <code>localStorage</code> に保存され、管理API呼び出し時に <code>x-admin-secret</code> ヘッダで送信されます。
+        </div>
+      </div>
+
+      {err && <p style={{ color: "red" }}>エラー: {err}</p>}
+
+      {/* 賞品作成 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: 520 }}>
+        <h3>賞品の新規作成</h3>
+        <form onSubmit={createPrize} style={{ display: "grid", gap: 8 }}>
+          <label>賞品ID（例: B002）
+            <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="B002" required />
+          </label>
+          <label>賞品名
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="○○賞" required />
+          </label>
+          <label>公開日時（JST）
+            <input type="datetime-local" value={newJst} onChange={(e) => setNewJst(e.target.value)} required />
+          </label>
+          <small style={{ color: "#555" }}>ヒント：初期値は<strong>現時間＋1時間（JST）</strong>の表記です。</small>
+          <div>
+            <button type="submit" disabled={creating}>{creating ? "作成中…" : "作成する"}</button>
+            {createMsg && <span style={{ marginLeft: 8, fontSize: 12 }}>{createMsg}</span>}
+          </div>
+        </form>
+      </section>
+
+      {/* CSV一括投入 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <h3>参加者エントリーの一括投入（CSV）</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+          <label>対象の賞品ID
+            <select value={csvPrizeId} onChange={(e) => setCsvPrizeId(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="">-- 選択してください --</option>
+              {prizeOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id} / {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>重複時の動作
+            <select value={conflictPolicy} onChange={(e) => setConflictPolicy(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="ignore">既存を維持（新規のみ追加）</option>
+              <option value="upsert">上書き（パスワード/当落を更新）</option>
+            </select>
+          </label>
+          <input type="file" accept=".csv,text/csv" disabled={csvBusy} onChange={(e) => onCsvSelected(e.target.files?.[0])} />
+          <button type="button" onClick={downloadSampleCsv}>サンプルCSVを保存</button>
+        </div>
+        <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
+          CSVフォーマット（1行目はヘッダ必須）：
+          <pre style={{ background: "#f7f7f7", padding: 8, overflowX: "auto" }}>
+entry_number,password,is_winner
+001,1111,true
+002,2222,false
+          </pre>
+        </div>
+        {csvBusy && <div>アップロード中…</div>}
+        {csvResult && !csvResult.error && (
+          <div style={{ fontSize: 13 }}>
+            追加: {csvResult.inserted ?? 0} / 更新: {csvResult.updated ?? 0} / スキップ: {csvResult.skipped ?? 0}
+            {csvResult.errors?.length > 0 && (
+              <details style={{ marginTop: 6 }}>
+                <summary>詳細エラー（{csvResult.errors.length}件）</summary>
+                <ul>
+                  {csvResult.errors.map((e, i) => (
+                    <li key={i}>行 {e.rowIndex + 2}: {e.message}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+        {csvResult && csvResult.error && <div style={{ color: "red" }}>エラー: {csvResult.error}</div>}
+      </section>
+
+      {/* 単票 UPSERT（CSVなしで手動） */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: 520 }}>
+        <h3>単票 UPSERT（手動）</h3>
+        <div style={{ display: "grid", gap: 8 }}>
+          <label>賞品ID
+            <input value={uPrizeId} onChange={(e) => setUPrizeId(e.target.value)} placeholder="B001" />
+          </label>
+          <label>抽選番号
+            <input value={uEntryNumber} onChange={(e) => setUEntryNumber(e.target.value)} placeholder="001" />
+          </label>
+          <label>パスワード
+            <input value={uPassword} onChange={(e) => setUPassword(e.target.value)} />
+          </label>
+          <label>
+            <input type="checkbox" checked={uIsWinner} onChange={(e) => setUIsWinner(e.target.checked)} />
+            &nbsp;当選
+          </label>
+          <div>
+            <button type="button" disabled={uBusy} onClick={upsertEntryManual}>
+              {uBusy ? "送信中…" : "UPSERT 実行"}
+            </button>
+            {uMsg && <span style={{ marginLeft: 8, fontSize: 12 }}>{uMsg}</span>}
+          </div>
+        </div>
+      </section>
+
+      {/* 賞品リスト */}
+      {prizes === null && <p>読み込み中…</p>}
+      {Array.isArray(prizes) && prizes.length === 0 && <p>賞品がありません。</p>}
+      {Array.isArray(prizes) && prizes.length > 0 && (
+        <ul style={{ paddingLeft: 16 }}>
+          {prizes.map((p) => (
+            <li key={p.id} style={{ marginBottom: 24, listStyle: "none", padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>
+                    <span style={{ fontFamily: "monospace" }}>{p.id}</span> {p.name}
+                  </div>
+                  <div>{formatJstDate(p.result_time_jst)}</div>
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <Link to={`/p?prizeId=${encodeURIComponent(p.id)}`}>参加者ページを開く</Link>
+                    <button type="button" onClick={() => publishNow(p.id)}>公開時刻を今にする</button>
+                  </div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <QRCode value={`${window.location.origin}/p?prizeId=${encodeURIComponent(p.id)}`} size={128} />
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={() => downloadQR(p)}>QRをPNG保存</button>
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解。未公開を上に並べ替えるトグル付きにした、**置き換え用の `frontend/src/Admin.jsx`** を丸ごと出します（公開済み/未公開バッジも入れています）。
+
+```jsx
+// frontend/src/Admin.jsx
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import QRCode from "react-qr-code";
+import * as QR from "qrcode";
+
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
+const ADMIN_KEY_STORAGE = "distribution-lottery/admin/secret";
+
+/** "2025-08-19 13:00" → "公開日: 2025/08/19 13:00" */
+function formatJstDate(str) {
+  try {
+    if (!str || typeof str !== "string") return `公開日: ${str ?? ""}`;
+    const [datePart, timePartRaw] = str.trim().split(/\s+/);
+    const [y, m, d] = (datePart || "").split("-");
+    const timePart = (timePartRaw || "").slice(0, 5);
+    if (!y || !m || !d || !timePart) return `公開日: ${str}`;
+    return `公開日: ${y}/${m}/${d} ${timePart}`;
+  } catch {
+    return `公開日: ${str}`;
+  }
+}
+
+/** 管理フォーム初期値: 現在のJST + 1時間 を datetime-local 形式で返す */
+function jstLocalInputValue(offsetMinutes = 60) {
+  const now = new Date();
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000 + offsetMinutes * 60 * 1000;
+  const jst = new Date(jstMs);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(jst.getUTCDate()).padStart(2, "0");
+  const hh = String(jst.getUTCHours()).padStart(2, "0");
+  const mm = String(jst.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+/** publish_time_utc が今以前なら公開済み */
+function isPublishedUtc(publishUtc) {
+  if (!publishUtc) return false;
+  const t = Date.parse(publishUtc);
+  if (Number.isNaN(t)) return false;
+  return t <= Date.now();
+}
+
+/** 小さなステータスバッジ */
+function PublishedBadge({ published }) {
+  const base = {
+    display: "inline-block",
+    fontSize: 12,
+    padding: "2px 8px",
+    borderRadius: 999,
+    marginLeft: 8,
+    verticalAlign: "middle",
+  };
+  return published ? (
+    <span style={{ ...base, color: "#14532d", background: "#dcfce7", border: "1px solid #86efac" }}>
+      公開済み
+    </span>
+  ) : (
+    <span style={{ ...base, color: "#7c2d12", background: "#ffedd5", border: "1px solid #fdba74" }}>
+      未公開
+    </span>
+  );
+}
+
+/** CSVを配列に（ヘッダ: entry_number,password,is_winner） */
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((s) => s.trim());
+  const idx_en = headers.indexOf("entry_number");
+  const idx_pw = headers.indexOf("password");
+  const idx_win = headers.indexOf("is_winner");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const en = (cols[idx_en] ?? "").trim();
+    const pw = (cols[idx_pw] ?? "").trim();
+    const winRaw = (cols[idx_win] ?? "").trim().toLowerCase();
+    const win = ["true", "1", "yes", "y", "t"].includes(winRaw);
+    if (en || pw) rows.push({ entry_number: en, password: pw, is_winner: win });
+  }
+  return rows;
+}
+
+// 管理API用の fetch（x-admin-secret を自動付与）
+async function adminFetch(path, options = {}) {
+  const secret = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+  const headers = Object.assign({}, options.headers || {}, { "x-admin-secret": secret });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let body = null;
+  try {
+    body = await res.json();
+  } catch (_e) {}
+  if (!res.ok) {
+    const msg = body?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+export default function Admin() {
+  const [prizes, setPrizes] = useState(null);
+  const [err, setErr] = useState("");
+
+  // 並べ替えオプション: 未公開を上に
+  const [unpublishedFirst, setUnpublishedFirst] = useState(true);
+
+  // 管理シークレット
+  const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) || "");
+  useEffect(() => {
+    localStorage.setItem(ADMIN_KEY_STORAGE, adminSecret || "");
+  }, [adminSecret]);
+
+  // 新規作成フォーム
+  const [newId, setNewId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newJst, setNewJst] = useState(() => jstLocalInputValue(60));
+  const [creating, setCreating] = useState(false);
+  const [createMsg, setCreateMsg] = useState("");
+
+  // CSV一括投入
+  const [csvPrizeId, setCsvPrizeId] = useState("");
+  the
+  const [csvResult, setCsvResult] = useState(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [conflictPolicy, setConflictPolicy] = useState("ignore"); // ignore|upsert
+
+  // 単票 UPSERT（手動）
+  const [uPrizeId, setUPrizeId] = useState("");
+  const [uEntryNumber, setUEntryNumber] = useState("");
+  const [uPassword, setUPassword] = useState("");
+  const [uIsWinner, setUIsWinner] = useState(false);
+  const [uBusy, setUBusy] = useState(false);
+  const [uMsg, setUMsg] = useState("");
+
+  // 読み込み
+  const loadPrizes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/prizes`, { headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPrizes(data);
+      setErr("");
+    } catch (e) {
+      setErr(String(e?.message || e));
+      setPrizes([]);
+    }
+  };
+  useEffect(() => {
+    loadPrizes();
+  }, []);
+
+  const participantUrl = (prizeId) => `${window.location.origin}/p?prizeId=${encodeURIComponent(prizeId)}`;
+
+  // QR PNG ダウンロード（日本語ラベル付き）
+  const downloadQR = async (p) => {
+    try {
+      const url = participantUrl(p.id);
+      const qrPngDataUrl = await QR.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 8 });
+      const img = new Image();
+      img.onload = () => {
+        const qrTarget = 256;
+        const padding = 24;
+        const textLineHeight = 18;
+        const extraTextLines = 2;
+        const extraHeight = extraTextLines * textLineHeight + padding;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = qrTarget + padding * 2;
+        canvas.height = qrTarget + padding * 2 + extraHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const x = (canvas.width - qrTarget) / 2;
+        const y = (canvas.height - extraHeight - qrTarget) / 2;
+        ctx.drawImage(img, x, y, qrTarget, qrTarget);
+
+        ctx.fillStyle = "#000";
+        ctx.font =
+          "14px 'Hiragino Sans','Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+        const textYStart = qrTarget + padding * 2 + textLineHeight / 2;
+        ctx.fillText(`賞品ID: ${p.id}`, padding, textYStart);
+        ctx.fillText(formatJstDate(p.result_time_jst), padding, textYStart + textLineHeight);
+
+        const pngUrl = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = `qr_${p.id}.png`;
+        a.click();
+      };
+      img.onerror = () => alert("QRのPNG変換に失敗しました（画像読み込みエラー）");
+      img.src = qrPngDataUrl;
+    } catch (e) {
+      console.error("downloadQR error:", e);
+      alert("QRのPNG変換に失敗しました（例外）。コンソールを確認してください。");
+    }
+  };
+
+  // 賞品作成（管理API）
+  const createPrize = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setCreateMsg("");
+    try {
+      if (!newId || !newName || !newJst) throw new Error("ID/名前/公開日時は必須です。");
+      const jstStr = newJst.replace("T", " ");
+      await adminFetch(`/api/prizes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId.trim(), name: newName.trim(), result_time_jst: jstStr }),
+      });
+      setCreateMsg("作成しました。");
+      setNewId("");
+      setNewName("");
+      setNewJst(jstLocalInputValue(60));
+      await loadPrizes();
+    } catch (e2) {
+      setCreateMsg(`エラー: ${e2.message}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // すぐ公開ボタン
+  const publishNow = async (id) => {
+    if (!id) return;
+    try {
+      const j = await adminFetch(`/api/prizes/${encodeURIComponent(id)}/publish_now`, {
+        method: "POST",
+      });
+      alert(`公開時刻を現在に更新しました（${formatJstDate(j.jst_view_from_utc).replace("公開日: ", "")}）`);
+      await loadPrizes();
+    } catch (e) {
+      alert(`公開に失敗: ${e.message}`);
+    }
+  };
+
+  // CSV一括投入（JSONボディ版）
+  const onCsvSelected = async (file) => {
+    setCsvResult(null);
+    if (!csvPrizeId) {
+      alert("先に対象の賞品IDを選択してください。");
+      return;
+    }
+    if (!file) return;
+    setCsvBusy(true);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) throw new Error("CSVの内容が空です。ヘッダ行とデータ行が必要です。");
+      const data = await adminFetch(`/api/entries/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prize_id: csvPrizeId, rows, onConflict: conflictPolicy }),
+      });
+      setCsvResult(data);
+    } catch (e) {
+      setCsvResult({ error: e.message });
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const prizeOptions = useMemo(() => (Array.isArray(prizes) ? prizes : []), [prizes]);
+
+  const downloadSampleCsv = () => {
+    const sample = "entry_number,password,is_winner\n001,1111,true\n002,2222,false\n";
+    const blob = new Blob([sample], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "entries_sample.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 単票 UPSERT（手動）
+  const upsertEntryManual = async () => {
+    setUBusy(true);
+    setUMsg("");
+    try {
+      if (!uPrizeId || !uEntryNumber || !uPassword) throw new Error("賞品ID / 抽選番号 / パスワード を入力してください");
+      const body = {
+        prize_id: uPrizeId.trim(),
+        entry_number: uEntryNumber.trim(),
+        password: uPassword,
+        is_winner: !!uIsWinner,
+      };
+      const j = await adminFetch(`/api/entries/upsert`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setUMsg(`UPSERT成功: id=${j.id} / ${j.entry_number} → ${j.is_winner ? "当選" : "落選"}`);
+    } catch (e) {
+      setUMsg(`エラー: ${e.message}`);
+    } finally {
+      setUBusy(false);
+    }
+  };
+
+  /** 並べ替え済みの賞品配列を計算（未公開→公開、次に公開日時が近い順） */
+  const sortedPrizes = useMemo(() => {
+    if (!Array.isArray(prizes)) return [];
+    const arr = [...prizes];
+    if (!unpublishedFirst) return arr;
+    const ts = (p) => {
+      const t = Date.parse(p.publish_time_utc || "");
+      return Number.isNaN(t) ? Infinity : t;
+    };
+    return arr.sort((a, b) => {
+      const ap = isPublishedUtc(a.publish_time_utc);
+      const bp = isPublishedUtc(b.publish_time_utc);
+      // 未公開を先に
+      if (ap !== bp) return ap ? 1 : -1;
+      // 同じ公開状態なら公開予定(または実際の)時刻が近い順
+      return ts(a) - ts(b);
+    });
+  }, [prizes, unpublishedFirst]);
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2>管理：賞品一覧</h2>
+
+      {/* 並べ替えオプション */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ userSelect: "none" }}>
+          <input
+            type="checkbox"
+            checked={unpublishedFirst}
+            onChange={(e) => setUnpublishedFirst(e.target.checked)}
+          />
+          &nbsp;未公開を上に並べ替える
+        </label>
+      </div>
+
+      {/* 管理シークレット入力 */}
+      <div style={{ border: "1px dashed #bbb", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <label>
+          管理シークレット（ADMIN_SECRET）
+          <input
+            type="password"
+            value={adminSecret}
+            onChange={(e) => setAdminSecret(e.target.value)}
+            placeholder="ここに管理シークレットを入力（ローカル保存）"
+            style={{ marginLeft: 8, width: 360 }}
+          />
+        </label>
+        <div style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
+          ブラウザの <code>localStorage</code> に保存され、管理API呼び出し時に <code>x-admin-secret</code> ヘッダで送信されます。
+        </div>
+      </div>
+
+      {err && <p style={{ color: "red" }}>エラー: {err}</p>}
+
+      {/* 賞品作成 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: 520 }}>
+        <h3>賞品の新規作成</h3>
+        <form onSubmit={createPrize} style={{ display: "grid", gap: 8 }}>
+          <label>
+            賞品ID（例: B002）
+            <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="B002" required />
+          </label>
+          <label>
+            賞品名
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="○○賞" required />
+          </label>
+          <label>
+            公開日時（JST）
+            <input type="datetime-local" value={newJst} onChange={(e) => setNewJst(e.target.value)} required />
+          </label>
+          <small style={{ color: "#555" }}>
+            ヒント：初期値は<strong>現時間＋1時間（JST）</strong>の表記です。
+          </small>
+          <div>
+            <button type="submit" disabled={creating}>{creating ? "作成中…" : "作成する"}</button>
+            {createMsg && <span style={{ marginLeft: 8, fontSize: 12 }}>{createMsg}</span>}
+          </div>
+        </form>
+      </section>
+
+      {/* CSV一括投入 */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <h3>参加者エントリーの一括投入（CSV）</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+          <label>
+            対象の賞品ID
+            <select value={csvPrizeId} onChange={(e) => setCsvPrizeId(e.target.value)} style={{ marginLeft: 8 }}>
+              <option value="">-- 選択してください --</option>
+              {prizeOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id} / {p.name}
+                </option>
+              ))}
+            </select>
+          </label>

@@ -1,0 +1,5000 @@
+HTTP 401
+# 一覧確認
+[
+  {
+    "id": "A001",
+    "name": "サンプル賞品A",
+    "result_time_jst": "2025-08-19 10:26",
+    "publish_time_utc": "2025-08-19T01:25:44.659Z",
+    "created_at": "2025-08-19T01:15:57.508Z",
+    "updated_at": "2025-08-19T01:26:51.525Z",
+    "jst_view_from_utc": "2025-08-18 16:25"
+  },
+  {
+    "id": "B001",
+    "name": "JST管理テスト（更新）",
+    "result_time_jst": "2025-08-19 13:00",
+    "publish_time_utc": "2025-08-19T03:22:53.692Z",
+    "created_at": "2025-08-19T01:31:50.195Z",
+    "updated_at": "2025-08-19T03:23:53.692Z",
+    "jst_view_from_utc": "2025-08-18 18:22"
+  }
+]
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+401 の原因は **サーバ側で `ADMIN_SECRET` が読めていない**か、**ミドルウェアの認証が意図通り動いていない**のどちらかです。  
+“全部置き換え”で **確実に .env を先に読み込み → 認証ミドルウェアで `x-admin-secret` と `Authorization: Bearer` の両方対応 → 起動時に「設定されているか」をログで可視化** する構成にします。
+
+下の 2 ファイルを **丸ごと置き換え**してください。
+
+---
+
+# 1) 置き換え：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/middleware/adminAuth.js`
+
+```js
+// backend/middleware/adminAuth.js
+module.exports = function adminAuth(req, res, next) {
+  const serverSecret = process.env.ADMIN_SECRET || "";
+
+  // 受信ヘッダ（どちらでも可）
+  const headerSecret = req.get("x-admin-secret") || "";
+  const bearer = (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+
+  // どちらか一致すれば通す
+  if (serverSecret && (headerSecret === serverSecret || bearer === serverSecret)) {
+    return next();
+  }
+
+  // デバッグ用に最小限のヒント（値そのものは出さない）
+  if (!serverSecret) {
+    return res.status(401).json({ error: "Unauthorized (admin secret required)" });
+  }
+  return res.status(401).json({ error: "Unauthorized (invalid admin secret)" });
+};
+```
+
+---
+
+# 2) 置き換え：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/index.js`
+
+```js
+// backend/index.js
+// ==== .env を最優先で読み込む（他の require より前！）====
+try {
+  // dotenv は dev でも本番でも使えるように
+  require("dotenv").config();
+} catch (_) {}
+
+// ==== 必要モジュール ====
+const express = require("express");
+const cors = require("cors");
+const path = require("path");
+
+// ルータ読み込みは .env 後（ADMIN_SECRET を確実に取り込む）
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+
+// ==== サーバ設定 ====
+const app = express();
+
+// CORS（フロントからのヘッダ送信に備えて許可）
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "x-admin-secret",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+app.use(express.json());
+
+// 起動時に ADMIN_SECRET が「設定されているか」を記録（値は表示しない）
+const hasAdmin = !!process.env.ADMIN_SECRET && process.env.ADMIN_SECRET.length >= 8;
+console.log(
+  `[boot] ADMIN_SECRET configured? ${hasAdmin ? "YES" : "NO"} (length=${
+    (process.env.ADMIN_SECRET || "").length
+  })`
+);
+
+// ヘルスチェック
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    hasAdminSecret: hasAdmin,
+  });
+});
+
+// ルータ
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+
+// （任意）フロントのビルド配信: Render 等で使う場合
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api/")) return next();
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) next();
+  });
+});
+
+// 起動
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+> ※ 既存の `routes/prizes.js / routes/entries.js / routes/lottery.js` はそのままでOK（先にお渡しした認証付きのものを利用）。  
+> ※ `.env` はすでに置き換え済み（`ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ`）という前提です。
+
+---
+
+## 実行手順（3ターミナル運用に合わせて）
+
+### 🟩 ターミナル1（バックエンド用）
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# バックエンド起動（.env を読んで立ち上げ）'
+PORT=3001 node index.js
+# ログに [boot] ADMIN_SECRET configured? YES が出ることを確認
+# 例: [boot] ADMIN_SECRET configured? YES (length=32)
+```
+
+### 🟦 ターミナル2（フロントエンド用）
+（起動済みなら何もしなくてOK）
+```bash
+cd ~/Downloads/distribution-lottery-app/frontend
+npm start
+```
+
+### 🟨 ターミナル3（コマンド実行用）
+```bash
+echo '# 管理シークレットを変数に（! を含まない）'
+ADMIN='R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ'
+
+echo '# ヘルスチェック（hasAdminSecret が true ならOK）'
+curl -sS http://localhost:3001/api/health | jq .
+
+echo '# 新規作成（201:作成 / 409:重複）— 今回は B998 を使用'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 念のため Authorization: Bearer でも試す（どちらでも可）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ADMIN" \
+  -d '{"id":"B997","name":"管理テスト2","result_time_jst":"2025-08-26 12:00"}'
+
+echo '# 一覧確認'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+- `health` の `hasAdminSecret: true` → サーバが .env の `ADMIN_SECRET` を読めています  
+- POST が `HTTP 201` → 作成成功  
+- `HTTP 409` → ID 重複（＝認証は通ってる）  
+- `HTTP 401` → ヘッダ未一致（この置き換えだとほぼ起きません。起きたらターミナル1の起動ログで `configured? YES` を再確認）
+
+---
+
+### それでも 401/500 の場合
+- ターミナル1の起動ログ先頭にある  
+  `"[boot] ADMIN_SECRET configured? ..."` の表示を教えてください（YES/NO と length）。  
+- POST のレスポンス本文（`detail` が出るようにしてあります）を貼ってください。  
+→ その情報で即、次の修正を出します。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# 3001 を使っている プロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# バックエンド起動（.env を読んで立ち上げ）'
+PORT=3001 node index.js
+# ログに [boot] ADMIN_SECRET configured? YES が出ることを確認
+# 例: [boot] ADMIN_SECRET configured? YES (length=32)
+# 3001 を使っているプロセスを停止
+# backend ディレクトリへ
+# バックエンド起動（.env を読んで立ち上げ）
+[dotenv@17.2.1] injecting env (2) from .env -- tip: ⚙️  override existing env vars with { override: true }
+[dotenv@17.2.1] injecting env (0) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[boot] ADMIN_SECRET configured? YES (length=13)
+/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:73
+            throw new TypeError(`Missing parameter name at ${i}: ${DEBUG_URL}`);
+            ^
+
+TypeError: Missing parameter name at 1: https://git.new/pathToRegexpError
+    at name (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:73:19)
+    at lexer (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:91:27)
+    at lexer.next (<anonymous>)
+    at Iter.peek (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:106:38)
+    at Iter.tryConsume (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:112:28)
+    at Iter.text (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:128:30)
+    at consume (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:152:29)
+    at parse (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:183:20)
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/path-to-regexp/dist/index.js:294:74
+    at Array.map (<anonymous>)
+
+Node.js v24.6.0
+zsh: no matches found: [boot]
+zsh: no matches found: [boot]
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+原因これです 👉 **Express（path-to-regexp v6系）では `app.get("*", …)` がNG**  
+そのため `Missing parameter name at 1: https://git.new/pathToRegexpError` が出ています。  
+（Express 5 / path-to-regexp 6 ではワイルドカードは `*` ではなく **正規表現**などで書く必要があります）
+
+下の **`backend/index.js` を“まるごと置き換え”**してください。  
+（`*` を使わず、`/^\/(?!api\/).*/` の正規表現で「/api/ 以外」を受けるように修正済み）
+
+---
+
+# 置き換え：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/index.js`
+
+```js
+// ==== .env は最優先で読み込む ====
+try {
+  require("dotenv").config();
+} catch (_) {}
+
+// ==== モジュール ====
+const express = require("express");
+const cors = require("cors");
+const path = require("path");
+
+// ==== ルーター（.env 読み込み後に require）====
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+
+const app = express();
+
+// ==== CORS ====
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "x-admin-secret",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+// ==== JSON ====
+app.use(express.json());
+
+// ==== 起動ログ（ADMIN_SECRET が設定されているかだけ表示。値は出さない）====
+const hasAdmin = !!process.env.ADMIN_SECRET && process.env.ADMIN_SECRET.length >= 8;
+console.log(
+  `[boot] ADMIN_SECRET configured? ${hasAdmin ? "YES" : "NO"} (length=${
+    (process.env.ADMIN_SECRET || "").length
+  })`
+);
+
+// ==== ヘルスチェック ====
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    hasAdminSecret: hasAdmin,
+  });
+});
+
+// ==== API ルート ====
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+
+// ====（任意）フロントの build を配信（/api/ 以外を全部 index.html に）====
+// Express 5 / path-to-regexp v6 では `*` は使えないので正規表現で回避
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+
+// /api/ で始まらない全てのパスをフロントにフォールバック
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) next(err);
+  });
+});
+
+// ==== 起動 ====
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+---
+
+## 再起動と確認（あなたの3ターミナル運用に合わせて）
+
+### 1⃣ ターミナル1（バックエンド）
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 起動（.env を読み込む）'
+PORT=3001 node index.js
+# → [boot] ADMIN_SECRET configured? YES (length=...) と出ればOK
+```
+
+### 2⃣ ターミナル3（コマンド実行）
+```bash
+echo '# ヘルスチェック'
+curl -sS http://localhost:3001/api/health | jq .
+```
+
+- これで **path-to-regexp のエラーは消える**はずです。  
+- もしまだ 401 が出る場合は、前にお渡しした手順で `ADMIN_SECRET` 一致確認（直渡し起動 or .env）を続行してください。
+
+> 補足：さっき出た `zsh: no matches found: [boot]` は、**ログに含まれる角括弧をコマンドとして解釈**しただけなので無視OKです（貼り付け時に zsh がグロブ展開しようとしました）。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# 3001 を使っている プロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 起動（.env を読み込む）'
+PORT=3001 node index.js
+# → [boot] ADMIN_SECRET configured? YES (length=...) と出ればOK
+# 3001 を使っているプロセスを停止
+# backend へ
+# 起動（.env を読み込む）
+[dotenv@17.2.1] injecting env (2) from .env -- tip: 📡 version env with Radar: https://dotenvx.com/radar
+[dotenv@17.2.1] injecting env (0) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[boot] ADMIN_SECRET configured? YES (length=13)
+Lottery backend (DB) running on port 3001
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね！そのログなら**サーバは正常起動**していて、しかも
+
+```
+[boot] ADMIN_SECRET configured? YES (length=13)
+```
+
+→ **管理シークレットは「13文字」**でロードされています。  
+ここが以前こちらで提案した32文字の値とズレていると、クライアント側で32文字を送っても**401になる**ので、まずは“サーバが持っている13文字の値”と**同じ値**を送る必要があります。
+
+やり方は2通りあります：
+
+---
+
+## 方式A：今の「13文字のシークレット」をそのまま使う（推奨：まず通す）
+ターミナル3（コマンド実行用）で `.env` から安全に読み出して、そのまま送ります。  
+（値は画面に出さず、変数にだけ入れます）
+
+```bash
+echo '# 管理シークレットを .env から読んで変数にセット（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+[ -z "$ADMIN" ] && echo "ADMIN_SECRET が .env にありません" && exit 1
+echo "# 読み取りOK（長さだけ表示）: ${#ADMIN} chars"
+
+echo '# 管理API: 新規賞品の作成（201=作成 / 409=重複）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 一覧確認'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+- `HTTP 201` → 成功  
+- `HTTP 409` → ID重複（＝認証は通ってる）  
+- `HTTP 401` → まだズレている（`.env` の値と送ってる値が一致しているか再確認）
+
+---
+
+## 方式B：シークレットを「提案の32文字」に**統一**して再起動（運用を揃えたい時）
+1. ターミナル1（バックエンド用）で**停止→.env編集→再起動**。
+
+```bash
+echo '# 3001を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# .env を完全置き換え（ADMIN_SECRET を 32文字に統一）'
+cat > ~/Downloads/distribution-lottery-app/backend/.env <<'EOF'
+DATABASE_URL=postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db?sslmode=require
+POSTGRES_SSL=true
+PORT=3001
+ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ
+NODE_ENV=development
+EOF
+
+echo '# 再起動'
+cd ~/Downloads/distribution-lottery-app/backend
+PORT=3001 node index.js
+# → [boot] ADMIN_SECRET configured? YES (length=32) と出ればOK
+```
+
+2. ターミナル3（コマンド実行用）で**同じ値**を送る：
+
+```bash
+echo '# 送信用のシークレットを 32文字に合わせる'
+ADMIN='R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ'
+
+echo '# 作成リクエスト（B997を例に）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B997","name":"管理テスト2","result_time_jst":"2025-08-26 12:00"}'
+
+echo '# 一覧確認'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+---
+
+### 補足（ヘルスチェック）
+管理シークレットがサーバに読まれているかは、簡単に確認できます：
+
+```bash
+curl -sS http://localhost:3001/api/health | jq .
+# => { "ok": true, "hasAdminSecret": true, ... }
+```
+
+---
+
+まずは**方式A**で “今サーバが保持している13文字” を使って POST が通るか確認してみてください。  
+通れば OK。その後、運用を揃えたいなら方式Bで32文字に統一しましょう。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 distribution-lottery-app % echo '# 管理シークレットを .env から読んで変数にセット（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+[ -z "$ADMIN" ] && echo "ADMIN_SECRET が .env にありません" && exit 1
+echo "# 読み取りOK（長さだけ表示）: ${#ADMIN} chars"
+
+echo '# 管理API: 新規賞品の作成（201=作成 / 409=重複）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 一覧確認'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+# 管理シークレットを .env から読んで変数にセット（値は表示しない）
+# 読み取りOK（長さだけ表示）: 31 chars
+# 管理API: 新規賞品の作成（201=作成 / 409=重複）
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+# 一覧確認
+[
+  {
+    "id": "A001",
+    "name": "サンプル賞品A",
+    "result_time_jst": "2025-08-19 10:26",
+    "publish_time_utc": "2025-08-19T01:25:44.659Z",
+    "created_at": "2025-08-19T01:15:57.508Z",
+    "updated_at": "2025-08-19T01:26:51.525Z",
+    "jst_view_from_utc": "2025-08-18 16:25"
+  },
+  {
+    "id": "B001",
+    "name": "JST管理テスト（更新）",
+    "result_time_jst": "2025-08-19 13:00",
+    "publish_time_utc": "2025-08-19T03:22:53.692Z",
+    "created_at": "2025-08-19T01:31:50.195Z",
+    "updated_at": "2025-08-19T03:23:53.692Z",
+    "jst_view_from_utc": "2025-08-18 18:22"
+  }
+]
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+原因わかりました。**サーバが保持している ADMIN_SECRET（13文字）** と、**あなたが .env から読んで送っている ADMIN_SECRET（31文字）** が一致していません。  
+→ そのため `Unauthorized (invalid admin secret)`（401）になっています。
+
+対処はどちらか：
+
+- A) **サーバを再起動して .env の31文字版を読ませる**（おすすめ）
+- B) 一旦、**サーバが今持っている13文字版**で送る（ただし現状その値は分からないので現実的には A を推奨）
+
+以下、A の最短コースをコピペで。
+
+---
+
+```bash
+echo '# 1) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 2) backend へ移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 3) （衝突回避）シェルの環境変数に ADMIN_SECRET が残っていないか確認'
+env | grep -E '^ADMIN_SECRET=' || echo '# ← 環境変数には無い（OK）'
+
+echo '# 4) .env の ADMIN_SECRET が 31 文字か確認（値は出さず長さのみ）'
+LEN=$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | awk '{print length}')
+echo "# .env の ADMIN_SECRET 長さ: ${LEN} chars"
+
+echo '# 5) バックエンドを .env で起動（このターミナルは起動専用で開いたままに）'
+PORT=3001 node index.js
+# 起動ログ例: [boot] ADMIN_SECRET configured? YES (length=31)
+```
+
+別ターミナル（コマンド実行用）で：
+
+```bash
+echo '# 6) .env から同じシークレットを読み、ヘッダに付けて送る（! なしなので安全）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 7) 新規作成（201=作成 / 409=重複）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 8) 一覧確認'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+---
+
+### まだ 401 の場合のチェック
+
+```bash
+echo '# A) 起動ログの長さ表示が 31 になっているか？（ターミナル1を確認）'
+echo '#    [boot] ADMIN_SECRET configured? YES (length=31) ならOK'
+
+echo '# B) 環境変数に古い ADMIN_SECRET が残っていないか？'
+env | grep -E '^ADMIN_SECRET=' || echo '# ← 無ければOK'
+```
+
+※ もし `env | grep ADMIN_SECRET` で値が出たら、そのシェルだけ `unset ADMIN_SECRET` してから再起動してください。  
+（環境変数が .env を上書きしていると、長さ 13 のままになります）
+
+---
+
+これで **長さ31に揃う → 201 か 409** が出るはず。  
+起動ログの `[boot] ... length=??` と `curl` の HTTP ステータスを教えてくれれば、続きの整備（Render反映など）もすぐ進めます。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % >....                     
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 3) （衝突回避）シェルの環境変数に ADMIN_SECRET が残って いないか確認'
+env | grep -E '^ADMIN_SECRET=' || echo '# ← 環境変数には無い（OK）'
+
+echo '# 4) .env の ADMIN_SECRET が 31 文字か確認（値は出さず長さのみ）'
+LEN=$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | awk '{print length}')
+echo "# .env の ADMIN_SECRET 長さ: ${LEN} chars"
+
+echo '# 5) バックエンドを .env で起動（このターミナルは起動専用 で開いたままに）'
+PORT=3001 node index.js
+# 起動ログ例: [boot] ADMIN_SECRET configured? YES (length=31)
+# 1) 3001 を使っているプロセスを停止
+# 2) backend へ移動
+# 3) （衝突回避）シェルの環境変数に ADMIN_SECRET が残っていないか確認
+# ← 環境変数には無い（OK）
+# 4) .env の ADMIN_SECRET が 31 文字か確認（値は出さず長さのみ）
+# .env の ADMIN_SECRET 長さ: 31 chars
+# 5) バックエンドを .env で起動（このターミナルは起動専用で開いたままに）
+[dotenv@17.2.1] injecting env (2) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.2.1] injecting env (0) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[boot] ADMIN_SECRET configured? YES (length=13)
+Lottery backend (DB) running on port 3001
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+原因特定 ✅  
+ログで毎回こう出ています：
+
+```
+[boot] ADMIN_SECRET configured? YES (length=13)
+```
+
+→ **.env では 31 文字なのに、起動後は 13 文字に“上書き”されている**状態です。  
+典型的には、**どこか別の環境変数 `ADMIN_SECRET`**（13文字）が先に入っており、`dotenv` がそれを上書きできていないのが原因です。
+
+確実に .env の値を優先させる対処を“全部置き換え”で入れます。
+
+---
+
+# 1) 置き換え：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/index.js`
+
+```js
+// backend/index.js
+
+// ==== 最初に path を用意 ====
+const path = require("path");
+
+// ==== .env を「必ず上書き」読み込み（他の require より前に実行！）====
+try {
+  const dotenv = require("dotenv");
+  dotenv.config({
+    override: true,
+    path: path.join(__dirname, ".env"), // backend/.env を明示
+  });
+} catch (_) {}
+
+// ==== 必要モジュール ====
+const express = require("express");
+const cors = require("cors");
+
+// ルータ（.env 読み込み後に require）
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+
+const app = express();
+
+// CORS
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "x-admin-secret",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+app.use(express.json());
+
+// 起動ログ（長さのみ表示）
+const adminLen = (process.env.ADMIN_SECRET || "").length;
+console.log(`[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`);
+
+// ヘルスチェック
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    hasAdminSecret: adminLen >= 8,
+    adminSecretLength: adminLen,
+  });
+});
+
+// API ルート
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+
+// （任意）フロント配信：/api/ 以外をすべてフロントにフォールバック
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+// Express 5 + path-to-regexp v6 では * は不可。正規表現で /api/ 以外へマッチ
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) next(err);
+  });
+});
+
+// 起動
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+---
+
+# 2) 置き換え：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/middleware/adminAuth.js`
+
+```js
+// backend/middleware/adminAuth.js
+// 起動時に一度だけ環境変数を確定させ、以後は固定値で判定（途中で上書きされない）
+const SERVER_SECRET = process.env.ADMIN_SECRET || "";
+
+module.exports = function adminAuth(req, res, next) {
+  const headerSecret = req.get("x-admin-secret") || "";
+  const bearer = (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+
+  if (SERVER_SECRET && (headerSecret === SERVER_SECRET || bearer === SERVER_SECRET)) {
+    return next();
+  }
+
+  if (!SERVER_SECRET) {
+    return res.status(401).json({ error: "Unauthorized (admin secret required)" });
+  }
+  return res.status(401).json({ error: "Unauthorized (invalid admin secret)" });
+};
+```
+
+---
+
+# 3) 再起動手順（あなたの3ターミナル運用に合わせて）
+
+### 🟩 ターミナル1（バックエンド用）
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend に移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# このシェルに残っている ADMIN_SECRET を念のため消す'
+unset ADMIN_SECRET
+
+echo '# バックエンド起動（.env を backend/.env から上書き読み込み）'
+PORT=3001 node index.js
+# ← ここに [boot] ADMIN_SECRET configured? YES (length=31) と出ること
+```
+
+### 🟨 ターミナル3（コマンド実行用）
+```bash
+echo '# サーバが 31 文字で読めているか health で確認'
+curl -sS http://localhost:3001/api/health | jq .
+# => "hasAdminSecret": true, "adminSecretLength": 31 になっていればOK
+
+echo '# .env と同じシークレットを読み取り（値は画面に出さない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 管理API: 新規作成（201 か 409 を期待）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+---
+
+# 4) それでも長さが 13 と出る場合のチェック
+
+```bash
+echo '# A) このシェルに ADMIN_SECRET が残っていないか'
+env | grep -E '^ADMIN_SECRET=' || echo '# ← 出力が無ければOK'
+
+echo '# B) 他の場所の .env を参照していないか（今回の修正では backend/.env を固定参照）'
+ls -la ~/Downloads/distribution-lottery-app/backend/.env
+```
+
+> 今回の修正では **backend/.env を明示**し、`override:true` で **環境変数の値も強制的に .env で上書き**します。  
+> これにより「どこかに残っていた 13 文字の値」が勝手に採用される問題は潰せます。
+
+---
+
+まずは置き換え → 再起動後の **起動ログの length** と **/api/health の `adminSecretLength`** を確認してください。  
+31 に揃えば、管理APIの POST は 201/409 で通るようになります。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# A) このシェルに ADMIN_SECRET が残っていないか'
+env | grep -E '^ADMIN_SECRET=' || echo '# ← 出力が無ければOK'
+
+echo '# B) 他の場所の .env を参照していないか（今回の修正では backend/.env を固定参照）'
+ls -la ~/Downloads/distribution-lottery-app/backend/.env
+# A) このシェルに ADMIN_SECRET が残っていないか
+# ← 出力が無ければOK
+# B) 他の場所の .env を参照していないか（今回の修正では backend/.env を固定参照）
+-rw-r--r--@ 1 m-aoki  staff  879  8 19 13:21 /Users/m-aoki/Downloads/distribution-lottery-app/backend/.env
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいログ取りです。その結果から分かること👇
+
+- `env | grep ADMIN_SECRET` が空 → **ターミナルの環境変数に残骸はない**（OK）
+- `backend/.env` は存在（OK）
+- それでも起動ログが `length=13` になる → **Node起動時に “どこか別の値（13文字）” が優先されている** 可能性大  
+  例：他ファイルで `dotenv.config()` が別パス／上書き無しで二重読込、旧値を保持した `adminAuth`、あるいは別ディレクトリからの起動…など
+
+まず “いまサーバが本当に読んでいる値” を**安全に**可視化して原因を特定します（値は出さず、長さとハッシュ指紋だけ返します）。
+
+---
+
+# ① デバッグ用ルートを追加（安全・認証必須）
+## 新規作成：`/Users/m-aoki/Downloads/distribution-lottery-app/backend/routes/adminDebug.js`（丸ごと）
+
+```js
+// backend/routes/adminDebug.js
+const crypto = require("crypto");
+const express = require("express");
+const router = express.Router();
+const adminAuth = require("../middleware/adminAuth");
+
+// 値は返さず、長さと SHA256 先頭8桁だけ返す
+function fingerprint(secret) {
+  if (!secret) return null;
+  const sha = crypto.createHash("sha256").update(secret).digest("hex");
+  return sha.slice(0, 8);
+}
+
+router.get("/env", adminAuth, (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({
+    adminSecretLength: s.length,
+    adminSecretSha256_8: fingerprint(s), // 値は漏らさない
+    cwd: process.cwd(),
+    __dirname: __dirname,
+    pid: process.pid,
+    node: process.version,
+  });
+});
+
+module.exports = router;
+```
+
+## `index.js` にマウント（置き換え不要、**1行追加**）
+`/Users/m-aoki/Downloads/distribution-lottery-app/backend/index.js` のルータ読み込み/マウント部分に以下を追加してください。
+
+```diff
+ const prizesRouter = require("./routes/prizes");
+ const entriesRouter = require("./routes/entries");
+ const lotteryRouter = require("./routes/lottery");
++const adminDebugRouter = require("./routes/adminDebug");
+ …
+ app.use("/api/prizes", prizesRouter);
+ app.use("/api/entries", entriesRouter);
+ app.use("/api/lottery", lotteryRouter);
++app.use("/api/admin-debug", adminDebugRouter);
+```
+
+> ※ もし「全部置き換えで欲しい」場合は、直前にお渡しした最新版 `index.js` にこの2行を足すだけでOKです。
+
+---
+
+# ② 再起動 → 現在の“サーバ側の値”を確認
+（ターミナル1：バックエンド）
+
+```bash
+echo '# 3001止める'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backendへ & 起動'
+cd ~/Downloads/distribution-lottery-app/backend
+PORT=3001 node index.js
+# [boot] ADMIN_SECRET configured? YES (length=??) を確認
+```
+
+（ターミナル3：コマンド実行）
+
+```bash
+echo '# .envから同じシークレットを読み取り（値は出さない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# サーバが持つ値の長さ＆指紋（要認証）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+ここで見るポイント：
+
+- `adminSecretLength` が **31** になっているか？
+- `adminSecretSha256_8` が **毎回一定**か？（再起動で変わらないか）
+- `cwd` と `__dirname` がどちらも `…/backend` を指しているか？
+
+もし **31 ではなく 13** のままなら、次の可能性が濃厚です。
+
+---
+
+# ③ ありがちな原因と対処
+
+### A. 別ファイルで `dotenv.config()` が再実行されている
+対処：バックエンドで `dotenv` を使っている箇所を洗います。
+
+```bash
+cd ~/Downloads/distribution-lottery-app/backend
+grep -R --line-number "dotenv" .
+```
+
+- **`index.js` 以外で `require("dotenv").config()` があれば削除**してください。  
+  `.env` 読み込みは **index.js 最上部の1か所のみ**に統一します。
+
+### B. `adminAuth.js` が起動直後に “固定化” している値が古い
+→ すでに**固定化版**をお渡ししていますが、古い `adminAuth.js` が残っていないか確認して、**この内容に置き換え**てください（再掲・丸ごと）：
+
+```js
+// backend/middleware/adminAuth.js
+const SERVER_SECRET = process.env.ADMIN_SECRET || "";
+
+module.exports = function adminAuth(req, res, next) {
+  const headerSecret = req.get("x-admin-secret") || "";
+  const bearer = (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  if (SERVER_SECRET && (headerSecret === SERVER_SECRET || bearer === SERVER_SECRET)) {
+    return next();
+  }
+  if (!SERVER_SECRET) {
+    return res.status(401).json({ error: "Unauthorized (admin secret required)" });
+  }
+  return res.status(401).json({ error: "Unauthorized (invalid admin secret)" });
+};
+```
+
+> 置き換え後は**必ず再起動**し、`/api/admin-debug/env` を再チェック。
+
+### C. `.env` の行末に不可視文字や引用符が混入
+たとえば `ADMIN_SECRET="abc..."` のように**ダブルクォート**がついていたり、**末尾にスペース**や CR（^M）があると、長さが想定外になります。
+
+確認：
+
+```bash
+cd ~/Downloads/distribution-lottery-app/backend
+echo '# .env の ADMIN_SECRET 行を可視化（制御文字を ^ で表示）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+```
+
+- 行頭が `ADMIN_SECRET=` で始まり、**右辺に引用符が無い**こと  
+- 末尾に `^M` やスペースが無いこと
+
+修正例（ダブルクォート除去）：
+
+```bash
+# バックアップ
+cp .env .env.bak
+
+# ダブルクォート除去（必要な場合のみ）
+perl -0777 -pe "s/^ADMIN_SECRET=\"(.*)\"$/ADMIN_SECRET=\$1/m" -i .env
+```
+
+### D. 別ディレクトリからの起動
+`cwd` と `__dirname` が `/backend` 以外を指していたら、**他場所の .env** を参照している可能性。  
+`index.js` は `path.join(__dirname, ".env")` で backend/.env を固定参照するようにしているので、最新版に**置き換え済みか再確認**してください。
+
+---
+
+# ④ 認証が通ったら（201/409になる）次の確認
+
+```bash
+echo '# 作成（IDはB998に例示）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 一覧'
+curl -sS http://localhost:3001/api/prizes | jq .
+```
+
+- `HTTP 201` → 作成成功  
+- `HTTP 409` → 重複（＝認証は通っている）
+
+---
+
+ここまでで **admin-debugの `adminSecretLength` が31** になり、POSTが `201/409` になればOKです。  
+もしまだ `13` のままなら、**`grep -R "dotenv" .` の結果**と、**`/api/admin-debug/env` の JSON**（fingerprintだけ）を貼ってください。そこまで出れば確実に詰め切ります。
+
+---
+
+user:
+もし「全部置き換えで欲しい」場合は、直前にお渡しした最新版 index.js にこの2行を足すだけでOKです。
+全部置き換えバージョンください。
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+```js
+// backend/index.js （全部置き換え版）
+// ─────────────────────────────────────────────────────────────────────────────
+// .env を backend/.env から「必ず上書き」読み込みしてから、すべての依存を require します。
+// Express 5 / path-to-regexp v6 に対応し、/api/ 以外はフロントビルドへフォールバックします。
+// 管理API用の adminDebug ルートも組み込み済み。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const path = require("path");
+
+// 1) .env を最優先でロード（backend/.env を明示 & override=true）
+try {
+  const dotenv = require("dotenv");
+  dotenv.config({
+    override: true,
+    path: path.join(__dirname, ".env"),
+  });
+} catch (_) {
+  // 何もしない（本番で .env が無い場合など）
+}
+
+// 2) 必要モジュール
+const express = require("express");
+const cors = require("cors");
+
+// 3) ルーターは .env ロード後に require（ADMIN_SECRET 等を確実に反映）
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+const adminDebugRouter = require("./routes/adminDebug"); // ← 追加
+
+// 4) アプリ本体
+const app = express();
+
+// 5) CORS（フロントからの管理ヘッダ送信に備えて許可）
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "x-admin-secret",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+// 6) JSON ボディ
+app.use(express.json());
+
+// 7) 起動ログ（ADMIN_SECRET は値は表示せず長さのみ）
+const adminLen = (process.env.ADMIN_SECRET || "").length;
+console.log(
+  `[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`
+);
+
+// 8) ヘルスチェック
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    hasAdminSecret: adminLen >= 8,
+    adminSecretLength: adminLen,
+  });
+});
+
+// 9) API ルート
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+app.use("/api/admin-debug", adminDebugRouter); // ← 追加（要 x-admin-secret 認証）
+
+// 10) フロント配信（/api/ 以外をすべてフロントの index.html にフォールバック）
+//     Express 5 + path-to-regexp v6 では "*" が使えないため正規表現で対応
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) next(err);
+  });
+});
+
+// 11) 起動
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+---
+
+user:
+index.js 置き換え完了、次のステップ
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解！index.js の置き換えが完了したので、**認証の健全性チェック → 500エラーの原因特定 → 作成API成功**まで一気に通します。  
+貼り付けOKな手順にします（3ターミナル運用を前提）。
+
+---
+
+## 0) まだなら作成：`backend/routes/adminDebug.js`（全部置き換え用）
+
+> 既に作ってあればこの節はスキップでOK
+
+```bash
+echo '# adminDebug ルータを新規作成'
+cat > ~/Downloads/distribution-lottery-app/backend/routes/adminDebug.js <<'EOF'
+const crypto = require("crypto");
+const express = require("express");
+const router = express.Router();
+const adminAuth = require("../middleware/adminAuth");
+
+// 値は返さず、長さとハッシュ指紋だけ返す
+function fingerprint(secret) {
+  if (!secret) return null;
+  const sha = crypto.createHash("sha256").update(secret).digest("hex");
+  return sha.slice(0, 8);
+}
+
+router.get("/env", adminAuth, (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({
+    adminSecretLength: s.length,
+    adminSecretSha256_8: fingerprint(s),
+    cwd: process.cwd(),
+    __dirname: __dirname,
+    pid: process.pid,
+    node: process.version,
+  });
+});
+
+module.exports = router;
+EOF
+```
+
+> すでに `index.js` には `app.use("/api/admin-debug", adminDebugRouter);` を入れてあるので、このファイルがあれば使えます。
+
+---
+
+## 1) ターミナル1（バックエンド）：再起動
+
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# バックエンド起動（.env を backend/.env から上書き読み込み）'
+PORT=3001 node index.js
+# ログ例: [boot] ADMIN_SECRET configured? YES (length=31)
+# ← このターミナルは起動専用で開いたまま
+```
+
+---
+
+## 2) ターミナル3（コマンド実行）：認証と環境チェック
+
+```bash
+echo '# .env から管理シークレットを取得（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# 読み取りOK（長さだけ表示）: ${#ADMIN} chars"
+
+echo '# /api/health（管理不要）'
+curl -sS http://localhost:3001/api/health | jq .
+
+echo '# /api/admin-debug/env（管理必須）: サーバ側が保持している長さと指紋'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+- `adminSecretLength` が **31**（あなたの .env の長さ）になっていればOK  
+- もし **13** など不一致なら、index.js の `.env override` が効いていない可能性 → この結果を教えてください
+
+---
+
+## 3)（重要）`backend/routes/prizes.js` を“原因が見える版”に置き換え
+
+> 先に渡した改良版が未反映の可能性があるので、**もう一度「全部置き換え」**します。  
+> これで **重複は 409、入力ミスは 400、その他は 500 + detail** が返り、原因が表に出ます。
+
+```bash
+echo '# prizes.js を全部置き換え（JST→UTC変換と詳細エラー）'
+cat > ~/Downloads/distribution-lottery-app/backend/routes/prizes.js <<'EOF'
+const express = require("express");
+const router = express.Router();
+const pool = require("../db");
+const adminAuth = require("../middleware/adminAuth");
+
+// JST "YYYY-MM-DD HH:mm" / "YYYY/MM/DD HH:mm" -> UTC ISO
+function jstStringToUtcIso(jstStr) {
+  if (!jstStr || typeof jstStr !== "string") {
+    const err = new Error("result_time_jst is required (string)");
+    err.code = "INPUT_ERR";
+    throw err;
+  }
+  const s = jstStr.trim().replace(/\//g, "-");
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/);
+  if (!m) {
+    const err = new Error("result_time_jst must be 'YYYY-MM-DD HH:mm' (例: 2025-08-25 12:00)");
+    err.code = "INPUT_ERR";
+    throw err;
+  }
+  const iso = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+09:00`).toISOString();
+  if (!iso || iso === "Invalid Date") {
+    const err = new Error("Invalid result_time_jst (date parse failed)");
+    err.code = "INPUT_ERR";
+    throw err;
+  }
+  return iso;
+}
+
+// 一覧（公開）
+router.get("/", async (_req, res) => {
+  try {
+    const q = `
+      SELECT
+        id, name, result_time_jst, publish_time_utc, created_at, updated_at,
+        TO_CHAR((publish_time_utc AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') AS jst_view_from_utc
+      FROM prizes
+      ORDER BY publish_time_utc ASC;
+    `;
+    const { rows } = await pool.query(q);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/prizes error:", err);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+// 個別取得（公開）
+router.get("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const q = `
+      SELECT
+        id, name, result_time_jst, publish_time_utc, created_at, updated_at,
+        TO_CHAR((publish_time_utc AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') AS jst_view_from_utc
+      FROM prizes
+      WHERE id = $1
+      LIMIT 1;
+    `;
+    const { rows } = await pool.query(q, [id]);
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("GET /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+// 作成（管理）
+router.post("/", adminAuth, async (req, res) => {
+  const { id, name, result_time_jst } = req.body;
+  try {
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({
+        error: "Missing fields",
+        detail: "id, name, result_time_jst are required",
+      });
+    }
+
+    const publishUtcIso = jstStringToUtcIso(result_time_jst);
+
+    const q = `
+      INSERT INTO prizes (id, name, result_time_jst, publish_time_utc, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at;
+    `;
+    const { rows } = await pool.query(q, [id, name, result_time_jst, publishUtcIso]);
+    return res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ error: "Duplicate prize id", code: "DUPLICATE" });
+    }
+    if (err.code === "INPUT_ERR") {
+      return res.status(400).json({ error: err.message, code: "INVALID_INPUT" });
+    }
+    console.error("POST /api/prizes error:", err);
+    return res.status(500).json({ error: "Failed to create prize", detail: err.message });
+  }
+});
+
+// 更新（管理）
+router.put("/:id", adminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { name, result_time_jst } = req.body;
+  try {
+    if (!name && !result_time_jst) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
+
+    let publishUtcIso = null;
+    if (result_time_jst) publishUtcIso = jstStringToUtcIso(result_time_jst);
+
+    const q = `
+      UPDATE prizes
+      SET
+        name = COALESCE($1, name),
+        result_time_jst = COALESCE($2, result_time_jst),
+        publish_time_utc = COALESCE($3, publish_time_utc),
+        updated_at = NOW()
+      WHERE id = $4
+      RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at;
+    `;
+    const { rows } = await pool.query(q, [name || null, result_time_jst || null, publishUtcIso, id]);
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === "INPUT_ERR") {
+      return res.status(400).json({ error: err.message, code: "INVALID_INPUT" });
+    }
+    console.error("PUT /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to update prize", detail: err.message });
+  }
+});
+
+// 削除（管理）
+router.delete("/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const del = await pool.query("DELETE FROM prizes WHERE id = $1", [id]);
+    if (del.rowCount === 0) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to delete prize" });
+  }
+});
+
+module.exports = router;
+EOF
+```
+
+> 置き換え後は**バックエンド再起動は不要**（ルートファイルのホットリロードは無い）ので、**再起動**してください。
+
+---
+
+## 4) ターミナル1：バックエンド再起動
+
+```bash
+echo '# 再起動'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+cd ~/Downloads/distribution-lottery-app/backend
+PORT=3001 node index.js
+```
+
+---
+
+## 5) ターミナル3：作成APIを再テスト（詳細エラー確認）
+
+```bash
+echo '# .env シークレット取得'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 新規作成（201=作成 / 409=重複 / 400=入力エラー / 500=その他詳細付）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+- `HTTP 201` → 🎉 OK  
+- `HTTP 409` → 重複（＝認証は通ってる）  
+- `HTTP 400` → `detail` を読んでフォーマット修正  
+- `HTTP 500` → いまは `detail` にエラー文が出るので、その内容を教えてください（DB制約/カラム名ミス等を即修正します）
+
+---
+
+## 6) 一覧で確認
+
+```bash
+echo '# 一覧'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+---
+
+ここまでで**500の正体が見える化**され、**作成APIが通る**はずです。  
+もしまだ詰まったら、**ターミナル1のサーバログ（POST時の行）**と**ステップ5のレスポンス本文（detail含む）**をそのまま貼ってください。すぐ直します。
+
+---
+
+user:
+13のままだけど・・・
+
+m-aoki@MacBook-Pro-20240703 backend % echo '# 3001 を使っている プロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# バックエンド起動（.env を backend/.env から上書き読み込 み）'
+PORT=3001 node index.js
+# ログ例: [boot] ADMIN_SECRET configured? YES (length=31)
+# ← このターミナルは起動専用で開いたまま
+# 3001 を使っているプロセスを停止
+# backend へ移動
+# バックエンド起動（.env を backend/.env から上書き読み込み）
+[dotenv@17.2.1] injecting env (5) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.2.1] injecting env (0) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[boot] ADMIN_SECRET configured? YES (length=13)
+Lottery backend (DB) running on port 3001
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+OK、**まだ 13 のまま**ですね。ここまで来たら「何かが `.env` の後で 13 文字の値に**上書き**している」可能性が濃厚です。  
+対策として、以下を一気にやります：
+
+1) 重複している `dotenv.config()` の洗い出し  
+2) `.env` の ADMIN_SECRET 行の**実体**確認（不可視文字や引用符）  
+3) **超強制ローダ**に置き換え（`.env` を自前で読み取り、`process.env.ADMIN_SECRET` を**先に固定**、以後の上書きを無効化）  
+4) ミドルウェアもその固定値を使うように変更
+
+---
+
+## まず確認（壊れていないか）
+
+### A. `.env` の実体を可視化
+```bash
+cd ~/Downloads/distribution-lottery-app/backend
+echo '# ADMIN_SECRET 行を制御文字付きで表示（^M や引用符の混入をチェック）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+```
+
+### B. プロジェクト内の `dotenv.config()` を洗う
+```bash
+cd ~/Downloads/distribution-lottery-app/backend
+echo '# dotenv を呼んでいる箇所を全部出す'
+grep -R --line-number "dotenv" .
+```
+> **index.js 以外**に `require("dotenv").config(...)` があったら、それが犯人。  
+> 後で消しますが、先に **強制ローダ**でねじ伏せます。
+
+---
+
+## 置き換え①：`backend/index.js`（全部置き換え・強制ローダ版）
+
+> `.env` を**手動でパース**し、**最初に** `process.env.ADMIN_SECRET` をセット＆**上書き不可**にします。  
+> その後に残りをロードするので、他所からの再読込では**上書きできません**。
+
+```js
+// backend/index.js （全部置き換え：強制ローダ版）
+
+const fs = require("fs");
+const path = require("path");
+
+// ── 1) .env の手動読込（backend/.env を固定参照）
+const ENV_PATH = path.join(__dirname, ".env");
+if (fs.existsSync(ENV_PATH)) {
+  const raw = fs.readFileSync(ENV_PATH, "utf8");
+  // 行ごとに読み、ADMIN_SECRET を先に拾う（引用符を剥がす）
+  const lines = raw.split(/\r?\n/);
+  for (const line of lines) {
+    const m = line.match(/^ADMIN_SECRET=(.*)$/);
+    if (m) {
+      let v = m[1].trim();
+      // 先頭末尾の " を除去（もし書いてあってもOKにする）
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1);
+      }
+      // すでにセット済みでも、まずは .env を優先
+      process.env.ADMIN_SECRET = v;
+      break;
+    }
+  }
+}
+
+// ── 2) ADMIN_SECRET を“不変化”して以降の上書きを無効化
+const fixedAdmin = process.env.ADMIN_SECRET || "";
+Object.defineProperty(process.env, "ADMIN_SECRET", {
+  value: fixedAdmin,
+  writable: false,      // 上書き不可
+  configurable: false,  // 再定義不可
+  enumerable: true,
+});
+
+// ── 3) 残りの .env を dotenv で読む（override しても ADMIN_SECRET は凍結済み）
+try {
+  const dotenv = require("dotenv");
+  dotenv.config({ override: true, path: ENV_PATH });
+} catch (_) {}
+
+// ── 4) 以降は通常のサーバ初期化
+const express = require("express");
+const cors = require("cors");
+
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+const adminDebugRouter = require("./routes/adminDebug");
+
+const app = express();
+
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "x-admin-secret",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+app.use(express.json());
+
+// 起動ログ（長さのみ）
+const adminLen = (process.env.ADMIN_SECRET || "").length;
+console.log(
+  `[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`
+);
+
+// ヘルス＆デバッグ
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    hasAdminSecret: adminLen >= 8,
+    adminSecretLength: adminLen,
+  });
+});
+
+app.use("/api/admin-debug", adminDebugRouter);
+
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+
+// フロント配信（/api/ 以外は index.html）
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) next(err);
+  });
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+---
+
+## 置き換え②：`backend/middleware/adminAuth.js`（固定値を使用）
+
+```js
+// backend/middleware/adminAuth.js （全部置き換え）
+
+// index.js で固定化済みの値をそのまま参照
+const SERVER_SECRET = process.env.ADMIN_SECRET || "";
+
+module.exports = function adminAuth(req, res, next) {
+  const headerSecret = req.get("x-admin-secret") || "";
+  const bearer = (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+
+  if (SERVER_SECRET && (headerSecret === SERVER_SECRET || bearer === SERVER_SECRET)) {
+    return next();
+  }
+  if (!SERVER_SECRET) {
+    return res.status(401).json({ error: "Unauthorized (admin secret required)" });
+  }
+  return res.status(401).json({ error: "Unauthorized (invalid admin secret)" });
+};
+```
+
+---
+
+## 再起動（あなたの3ターミナル運用に合わせて）
+
+### ターミナル1（バックエンド）
+```bash
+echo '# 3001 を止める'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 起動（固定ローダ版）'
+PORT=3001 node index.js
+# → ここで [boot] ... length=31 になるはず
+```
+
+### ターミナル3（コマンド実行）
+```bash
+echo '# .env から送信用シークレットを読む（表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# admin-debug でサーバ側の長さ確認（要認証）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+
+echo '# 作成API（201/409 期待）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+---
+
+## それでもダメなら（最後の切り札）
+
+もし **それでも length=13** が出るなら、**どこか別ファイル**で `dotenv.config()` が走って**上書き**しています。  
+その時は **プロジェクト全体から dotenv 呼び出しを一掃**します。
+
+```bash
+cd ~/Downloads/distribution-lottery-app/backend
+echo '# dotenv を呼んでいるファイル一覧'
+grep -R --line-number "dotenv" .
+
+echo '# （index.js 以外に出たファイル）から require("dotenv") 行を削除orコメントアウト'
+# エディタで削除してください。削除後は再起動。
+```
+
+> なお、`NODE_OPTIONS` などで外部から注入しているケースはまず無いですが、  
+> 念のため `env | sort` を眺めて `DOTENV` 系の変数がないかも確認してみてください。
+
+---
+
+### まとめ
+- **強制ローダ**で `.env` の ADMIN_SECRET を最初に固定 → 上書き不能にしたので、今度こそ 31 で起動するはず。  
+- 起動ログ `length=31`、`/api/admin-debug/env` の `adminSecretLength: 31`、POST が `201/409` になれば完了です。
+
+出力がどうなるか（起動ログと `admin-debug/env` の JSON）をそのまま貼ってください。すぐ次へ進みます。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % cd ~/Downloads/distribution-lottery-app/backend
+echo '# ADMIN_SECRET 行を制御文字付きで表示（^M や引用符の混入をチェック）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+# ADMIN_SECRET 行を制御文字付きで表示（^M や引用符の混入をチェック）
+20:ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+OK、まだ length=13 ですね。**“.env は 31 文字なのに、起動後に 13 文字へ上書きされている”**のが確定です。  
+まずは確実に通す最短ワークアラウンド → **起動時に ADMIN_SECRET を明示注入**。あわせて**犯人ファイルの特定**を一気にやります。すべてコピペOKで用意しました。
+
+---
+
+### A) まず通す：起動時に ADMIN_SECRET を明示注入
+```bash
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# .env から ADMIN_SECRET を取り出す（表示しない）'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# ADMIN_SECRET を明示注入して起動（これが最優先で使われる）'
+ADMIN_SECRET="$ADMIN" PORT=3001 node index.js
+# ← ログが [boot] ADMIN_SECRET configured? YES (length=31) になるか確認
+```
+
+> これで **length=31** になれば、**APIの401は解消**します（このまま運用も可）。  
+> なお、他の箇所が上書きしようとしても **起動時に注入した環境変数が最優先**で使われます。
+
+---
+
+### B) 犯人を特定：どこが 13文字に上書き？
+```bash
+echo '# 1) dotenv を呼んでいる箇所を全検索（index.js 以外にあると上書きの犯人になりがち）'
+cd ~/Downloads/distribution-lottery-app/backend
+grep -R --line-number "dotenv" .
+
+echo '# 2) ADMIN_SECRET を直接触っている箇所を全検索（固定文字列で上書きしている可能性）'
+grep -R --line-number "ADMIN_SECRET" .
+
+echo '# 3) もし 13 文字の固定値がコードに含まれていないか、怪しい英数字13文字をざっくりスキャン'
+grep -R --line-number -E "[A-Za-z0-9!@#\$%\^&\*\-_]{13}" . | head -n 50
+```
+
+- `index.js` 以外で `require("dotenv").config(...)` が見つかったら、**その行を削除**してください（`.env`読み込みは index.js の1カ所だけに統一）。
+- `process.env.ADMIN_SECRET = "……"` のような **直書き** が見つかったら削除。
+- 文字列リテラルで 13 文字の疑わしい値が見つかったら、そのファイル名・行番号を教えてください。直すべき箇所をピンポイントで出します。
+
+---
+
+### C) デバッグ：サーバが保持している“実値の長さ”を確認
+> すでに `adminDebug` を入れているはずなので、そのまま使います。
+
+```bash
+echo '# .env の ADMIN_SECRET を送信用に読む'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# サーバ側が保持している長さとフィンガープリント（要認証）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+- `adminSecretLength` が **31** になっていれば OK。
+- まだ **13** のまま → 上の「B) 犯人特定」で出たファイルが原因の可能性が高いです。
+
+---
+
+### D) 恒久対応（推奨）
+犯人を除去した上で、**index.js を“強制ローダ版（.env先読み＆凍結）”**にしておくと再発しません。  
+もし未反映なら、先ほどお渡しの **「強制ローダ版 index.js（全部置き換え）」**をもう一度入れてから再起動してください。
+
+---
+
+### E) 管理APIを即テスト（通ったら成功）
+```bash
+echo '# 新規作成（201=作成 / 409=重複）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo '# 一覧'
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+---
+
+**ポイント**
+
+- まずは **A の“起動時明示注入”**で通す → 401解消を確認  
+- 次に **B の grep** で「二重dotenv」や「直書き上書き」を潰す  
+- 最後に **強制ローダ版 index.js** にしておけば再発しません
+
+A を実行したときの **起動ログ（length=??）** と、B の **grep 結果（該当行）** を貼ってくれれば、原因箇所のパッチをすぐ出します。
+
+---
+
+user:
+echo '# 1) dotenv を呼んでいる箇所を全検索（index.js 以外にあると上書きの犯人になりがち）'
+cd ~/Downloads/distribution-lottery-app/backend
+grep -R --line-number "dotenv" .
+
+echo '# 2) ADMIN_SECRET を直接触っている箇所を全検索（固定文字列で上書きしている可能性）'
+grep -R --line-number "ADMIN_SECRET" .
+
+echo '# 3) もし 13 文字の固定値がコードに含まれていないか、怪しい英数字13文字をざっくりスキャン'
+grep -R --line-number -E "[A-Za-z0-9!@#\$%\^&\*\-_]{13}" . | head -n 50
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解。zsh で `!` などがヒストリ展開されてエラーになっているので、**確実に通る版**を用意しました。  
+（ポイント：①一時的にヒストリ展開を無効化、②`node_modules`/`.git` を除外、③パターンは**シングルクォート**で囲む）
+
+```bash
+echo '# 0) このシェルだけ履歴展開(!)を無効化（再度有効化は: set -H）'
+set +H
+
+echo '# 1) backend へ移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 2) dotenv を呼んでいる箇所（index.js 以外の犯人探し）'
+grep -R --line-number --exclude-dir=node_modules --exclude-dir=.git 'dotenv' .
+
+echo '# 3) ADMIN_SECRET を直接触っている箇所（直書きや再代入の疑い）'
+grep -R --line-number --exclude-dir=node_modules --exclude-dir=.git 'ADMIN_SECRET' .
+
+echo '# 4) 怪しい固定13文字トークンをざっくりスキャン（ソース系のみ）'
+grep -R --line-number -E \
+  --exclude-dir=node_modules --exclude-dir=.git \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.env' \
+  '[A-Za-z0-9@#$%^&*_-]{13}' . | head -n 50
+```
+
+### 使い方メモ
+- **出力に `index.js` 以外で `require("dotenv").config(...)` が出たら**、その行を削除（`.env` 読み込みは index.js のみに統一）。
+- **`process.env.ADMIN_SECRET = "…"` のような再代入**が見つかったら削除。
+- 13文字ヒットはノイズも混ざるので、**ファイル名と行番号**を見て怪しいもの（管理関連のコードなど）を確認してください。
+
+見つかった出力（怪しそうな行）をそのまま貼ってくれれば、**該当ファイルの修正パッチ（置き換え版）**をすぐ出します。
+
+---
+
+user:
+
+m-aoki@MacBook-Pro-20240703 backend % >....                     
+
+echo '# 2) dotenv を呼んでいる箇所（index.js 以外の犯人探し）'
+grep -R --line-number --exclude-dir=node_modules --exclude-dir=.git 'dotenv' .
+
+echo '# 3) ADMIN_SECRET を直接触っている箇所（直書きや再代入の疑い）'
+grep -R --line-number --exclude-dir=node_modules --exclude-dir=.git 'ADMIN_SECRET' .
+
+echo '# 4) 怪しい固定13文字トークンをざっくりスキャン（ソース系 のみ）'
+grep -R --line-number -E \
+  --exclude-dir=node_modules --exclude-dir=.git \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.env' \
+  '[A-Za-z0-9@#$%^&*_-]{13}' . | head -n 50
+# 0) このシェルだけ履歴展開(!)を無効化（再度有効化は: set -H）
+# 1) backend へ移動
+# 2) dotenv を呼んでいる箇所（index.js 以外の犯人探し）
+./db.js:2:require("dotenv").config();
+./index.js:12:  const dotenv = require("dotenv");
+./index.js:13:  dotenv.config({
+./package-lock.json:13:        "dotenv": "^17.2.1",
+./package-lock.json:167:    "node_modules/dotenv": {
+./package-lock.json:169:      "resolved": "https://registry.npmjs.org/dotenv/-/dotenv-17.2.1.tgz",
+./package-lock.json:176:        "url": "https://dotenvx.com"
+./package.json:15:    "dotenv": "^17.2.1",
+# 3) ADMIN_SECRET を直接触っている箇所（直書きや再代入の疑い）
+./middleware/adminAuth.js:3:const SERVER_SECRET = process.env.ADMIN_SECRET || "";
+./index.js:25:// 3) ルーターは .env ロード後に require（ADMIN_SECRET 等を確実に反映）
+./index.js:54:// 7) 起動ログ（ADMIN_SECRET は値は表示せず長さのみ）
+./index.js:55:const adminLen = (process.env.ADMIN_SECRET || "").length;
+./index.js:57:  `[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`
+./.env:20:ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ
+./routes/adminDebug.js:14:  const s = process.env.ADMIN_SECRET || "";
+# 4) 怪しい固定13文字トークンをざっくりスキャン（ソース系のみ）
+./lotteryData.js:8:    resultTimeJST: "2025-08-10 00:00", // ← JST
+./lotteryData.js:17:    resultTimeJST: "2025-08-20 15:30:00", // JST（秒ありも可）
+./middleware/adminAuth.js:3:const SERVER_SECRET = process.env.ADMIN_SECRET || "";
+./middleware/adminAuth.js:6:  const headerSecret = req.get("x-admin-secret") || "";
+./middleware/adminAuth.js:7:  const bearer = (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+./middleware/adminAuth.js:9:  if (SERVER_SECRET && (headerSecret === SERVER_SECRET || bearer === SERVER_SECRET)) {
+./middleware/adminAuth.js:13:  if (!SERVER_SECRET) {
+./db.js:5:  connectionString: process.env.DATABASE_URL,
+./db.js:6:  ssl: { rejectUnauthorized: false }
+./time.js:8:  // 例: '2025-08-20 12:00' -> '2025-08-20T03:00:00.000Z'
+./time.js:20:function utcDateToJstText(dt) {
+./time.js:25:  const y = j.getUTCFullYear();
+./time.js:29:  const mi = pad(j.getUTCMinutes());
+./time.js:33:module.exports = { jstToUtcIso, utcDateToJstText };
+./index.js:4:// Express 5 / path-to-regexp v6 に対応し、/api/ 以外はフロントビルドへフォールバックします。
+./index.js:27:const entriesRouter = require("./routes/entries");
+./index.js:28:const lotteryRouter = require("./routes/lottery");
+./index.js:29:const adminDebugRouter = require("./routes/adminDebug"); // ← 追加
+./index.js:39:    allowedHeaders: [
+./index.js:41:      "X-Requested-With",
+./index.js:44:      "Authorization",
+./index.js:45:      "x-admin-secret",
+./index.js:65:    hasAdminSecret: adminLen >= 8,
+./index.js:66:    adminSecretLength: adminLen,
+./index.js:72:app.use("/api/entries", entriesRouter);
+./index.js:73:app.use("/api/lottery", lotteryRouter);
+./index.js:74:app.use("/api/admin-debug", adminDebugRouter); // ← 追加（要 x-admin-secret 認証）
+./index.js:77://     Express 5 + path-to-regexp v6 では "*" が使えないため正規表現で対応
+./index.js:78:const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+./index.js:79:app.use(express.static(frontendBuild));
+./index.js:81:  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+./package-lock.json:4:  "lockfileVersion": 3,
+./package-lock.json:21:      "integrity": "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==",
+./package-lock.json:33:      "resolved": "https://registry.npmjs.org/body-parser/-/body-parser-2.2.0.tgz",
+./package-lock.json:34:      "integrity": "sha512-02qvAaxv8tp7fBa/mw1ga98OGm+eCbqzJOKoRt70sLmfEEi+jyBYVTDGfCL/k06/4EMk/z01gCe7HoCH/f2LTg==",
+./package-lock.json:54:      "integrity": "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==",
+./package-lock.json:60:    "node_modules/call-bind-apply-helpers": {
+./package-lock.json:62:      "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+./package-lock.json:63:      "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
+./package-lock.json:67:        "function-bind": "^1.1.2"
+./package-lock.json:76:      "integrity": "sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg==",
+./package-lock.json:79:        "call-bind-apply-helpers": "^1.0.2",
+./package-lock.json:80:        "get-intrinsic": "^1.3.0"
+./package-lock.json:89:    "node_modules/content-disposition": {
+./package-lock.json:91:      "resolved": "https://registry.npmjs.org/content-disposition/-/content-disposition-1.0.0.tgz",
+./package-lock.json:92:      "integrity": "sha512-Au9nRL8VNUut/XSzbQA38+M78dzP4D+eqg3gfJHMIHHYa3bg067xj1KxMUWj+VULbiZMowKngFFbKczUrNJ1mg==",
+./package-lock.json:103:      "resolved": "https://registry.npmjs.org/content-type/-/content-type-1.0.5.tgz",
+./package-lock.json:104:      "integrity": "sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA==",
+./package-lock.json:113:      "integrity": "sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==",
+./package-lock.json:119:    "node_modules/cookie-signature": {
+m-aoki@MacBook-Pro-20240703 backend % 
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解。`ADMIN_SECRET` が **13文字**と表示され続ける件、まずは“複数箇所で dotenv を読み込んで上書き/競合している”可能性を潰します。あなたの grep 結果では `db.js` でも `require("dotenv").config()` が走っているので、**.env ロードは index.js の一箇所だけ**に統一しましょう。
+
+# 1) backend/db.js を「丸ごと置き換え」
+以下を **`/Users/m-aoki/Downloads/distribution-lottery-app/backend/db.js`** にそのまま貼り付けて保存してください（dotenv の呼び出しは削除済み）。
+
+```js
+// backend/db.js  ← 丸ごと置き換え
+const { Pool } = require("pg");
+
+// .env の読み込みは index.js で一度だけ行う想定
+// ここでは process.env をそのまま使う
+const useSSL =
+  String(process.env.POSTGRES_SSL || process.env.PGSSLMODE || "")
+    .toLowerCase()
+    .includes("require") ||
+  String(process.env.POSTGRES_SSL || "").toLowerCase() === "true";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: useSSL ? { rejectUnauthorized: false } : undefined,
+});
+
+module.exports = { pool };
+```
+
+# 2) サーバを再起動して、起動ログを確認
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 起動（index.js が backend/.env を読み込む）'
+PORT=3001 node index.js
+# ← ログに [boot] ADMIN_SECRET configured? YES (length=31) を狙います
+```
+
+まだ `length=13` と出る場合は、**.env 自体の値は 31 文字なのに、プロセスに入った時点で 13 文字に変形**している可能性が残ります。次の切り分けを続けてください。
+
+# 3) 実際にサーバプロセスが見ている値を /api/admin-debug/env で確認  
+このエンドポイントは `x-admin-secret` 認証が必要です。いったん **.env の値をそのままシェル変数に読み込んで**投げます（値は画面に出しません）。
+
+```bash
+echo '# 別ターミナル(コマンド用)で実行：.env から ADMIN_SECRET を読み込む（表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# .env の ADMIN_SECRET 長さ: ${#ADMIN} chars"
+
+echo '# /api/admin-debug/env を叩いて、サーバが認識する長さと指紋を確認'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+期待例：
+```json
+{
+  "adminSecretLength": 31,
+  "adminSecretSha256_8": "e3ab12cd",
+  "cwd": ".../backend",
+  "__dirname": ".../backend",
+  "pid": 12345,
+  "node": "v24.6.0"
+}
+```
+
+もし **ここでも `adminSecretLength: 13`** になる場合は、以下を続けます。
+
+# 4) さらに切り分け：.env を無視して“直渡し”で起動してみる
+**.env の影響を完全に断ち切り**、そのターミナルでだけ直接注入して起動します。
+
+```bash
+echo '# 直渡し起動テスト（値は .env のものを採用）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+ADMIN_SECRET="$ADMIN" PORT=3001 node index.js
+# ← ここで length=31 になれば、.env の読取経路がどこかで壊れていた証拠
+```
+
+# 5) それでも 13 のままなら
+- **.env の実体に不可視文字**（途中の改行やタブ）が紛れている可能性があります。下記で可視化確認：
+  ```bash
+  echo '# .env の ADMIN_SECRET 行を可視化表示（制御文字チェック）'
+  cd ~/Downloads/distribution-lottery-app/backend
+  grep -nE '^ADMIN_SECRET=' .env | cat -v
+  ```
+- **.env に重複定義**（先に 13文字、後で31文字）があると、どちらが採用されるかはロード順依存です。`grep -n "ADMIN_SECRET" .env` で **1行だけ**になっているか確認してください。
+
+---
+
+## よくある原因まとめ
+- `db.js` での `require("dotenv").config()` が**別の. env**を拾っていたり、複数回のロードで混乱 → ✅ **db.js から除去**（今回対策済み）。
+- 別ターミナルで `ADMIN_SECRET` の**短い値が環境変数に残存** → ✅ `unset ADMIN_SECRET` 済みか確認。
+- **.env の編集時に OS が不可視文字を混入** → ✅ `cat -v` で確認。
+- **index.js より前にルータ/middleware を require** → ✅ index.js は「dotenv → ルータ require」の順になっていることを確認（あなたの grep 出力では順序OK）。
+
+---
+
+## 次の一手（うまくいったら）
+- `curl` で管理APIを再度チェック：
+  ```bash
+  echo '# 管理作成リクエスト（201: Created / 409: Conflict を想定）'
+  ADMIN="$(grep -E '^ADMIN_SECRET=' ~/Downloads/distribution-lottery-app/backend/.env | cut -d= -f2-)"
+  curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+    -H 'Content-Type: application/json' \
+    -H "x-admin-secret: $ADMIN" \
+    -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+  ```
+
+出力や `/api/admin-debug/env` の JSON をそのまま貼ってくれれば、続きの修正（必要ならファイル置き換え）まで一気にやります。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 distribution-lottery-app % echo '# 別ターミナル(コマンド用)で実行：.env から ADMIN_SECRET を読み込む（表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# .env の ADMIN_SECRET 長さ: ${#ADMIN} chars"
+
+echo '# /api/admin-debug/env を叩いて、サーバが認識する長さと指紋を確認'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+# 別ターミナル(コマンド用)で実行：.env から ADMIN_SECRET を読み込む（表示しない）
+# .env の ADMIN_SECRET 長さ: 31 chars
+# /api/admin-debug/env を叩いて、サーバが認識する長さと指紋を確認
+{
+  "error": "Unauthorized (invalid admin secret)"
+}
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+なるほど、ここでハッキリしました。  
+サーバが「.env の 31文字の値」を読めているはずなのに、実際にリクエストすると `/api/admin-debug/env` が「invalid admin secret」を返している＝サーバ側が認識している値と、クライアント（curl 側）が送っている値がズレています。  
+
+---
+
+## 今わかっていること
+- `.env` の `ADMIN_SECRET` は **31文字** → grep の結果もOK。  
+- バックエンド起動ログでは **13文字** と表示され続けている。  
+- `adminAuth.js` は `process.env.ADMIN_SECRET` をそのまま使っている。  
+- `/api/admin-debug/env` に curl したとき、`-H "x-admin-secret: $ADMIN"` を付けても 401 → サーバ内部の `process.env.ADMIN_SECRET` と一致していない。  
+
+つまり「サーバ起動時に使っている .env の値」が別物になっている。
+
+---
+
+## 切り分けステップ
+### 1. サーバが読んでいる値を直接確認
+バックエンド用ターミナルでサーバを起動したまま、**別ターミナルから curl**:
+
+```bash
+curl -sS http://localhost:3001/api/admin-debug/env
+```
+
+これは「ヘッダなし」なので Unauthorized になりますが、返ってくる JSON の中には `expectedLength` や `fingerprint` を出すように修正しておいたはずです。  
+（もし `fingerprint` が出ていない場合は、`routes/adminDebug.js` に追加が必要です）
+
+→ これで「サーバが実際に保持している ADMIN_SECRET の長さ」を確認できます。
+
+---
+
+### 2. サーバ側の .env を再確認
+backend ディレクトリで:
+
+```bash
+cat -A .env | grep ADMIN_SECRET
+```
+
+これで **改行コードや不可視文字**（例: `$`, `\r`, `"`, 空白）が混入していないかを確認してください。  
+出力が `^M` など含んでいたら、サーバ起動時に短く解釈されている原因です。
+
+---
+
+### 3. サーバを「環境変数を無視して」直接渡して起動
+念のためテストで、シェルから直渡しで試してみましょう。バックエンド専用ターミナルで:
+
+```bash
+ADMIN_SECRET='R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ' PORT=3001 node index.js
+```
+
+このときログが `[boot] ADMIN_SECRET configured? YES (length=31)` になれば、`.env` の読み込みに何か問題があると確定です。
+
+---
+
+## 次のアクション
+1. まず `curl -sS http://localhost:3001/api/admin-debug/env` を叩いて、サーバが保持している長さを確認してください。  
+2. その後、`.env` を `cat -A` で確認して、余計な制御文字がないか見ます。  
+3. もし怪しい場合、**.env を作り直して上書き保存**すると解決する可能性が高いです。  
+
+👉 今の状況から推測するに、`.env` に余計な **改行コード（CRLF）** か **不可視の引用符** が残っている可能性が濃厚です。  
+
+---
+
+ここで質問です：  
+`/api/admin-debug/env` のレスポンスに **サーバが持っている expectedLength** は出ていましたか？  
+それが 13 になっていれば、やはり `.env` が壊れている線が最有力です。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % curl -sS http://localhost:3001/api/admin-debug/env
+{"error":"Unauthorized (invalid admin secret)"}%   
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+`/api/admin-debug/env` は**管理用エンドポイント**なので、`x-admin-secret` ヘッダなしで叩くと **Unauthorized (invalid admin secret)** になります（今の結果は想定通りです）。
+
+すぐ通すためのコマンドを置いておきます（コピペOK、#は echo 表示）：
+
+```bash
+echo '# backend/.env から ADMIN_SECRET を読み込む（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 管理ヘッダ付きで /api/admin-debug/env を叩く'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+これでサーバ側が認識している `adminSecretLength` やフィンガープリントが返るはずです。
+
+---
+
+### もしまだ 401 になる場合の即時チェック
+
+```bash
+echo '# バックエンドの起動ログで長さを確認（length=31 を期待）'
+# まだ起動していなければ:
+# PORT=3001 node index.js
+
+echo '# 一時的に直渡しで起動（.env を疑う切り分け）：length=31 になるか？'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+ADMIN_SECRET="$ADMIN" PORT=3001 node index.js
+```
+
+- 起動ログが `length=31` なら、以降の `curl` は通るはずです。
+- それでもダメなら、ヘッダが本当に乗っているかを `-v` で確認してください：
+  ```bash
+  echo '# 送信ヘッダの実物を確認'
+  curl -v -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env 2>&1 | sed -n '1,20p'
+  ```
+
+---
+
+### 参考：開発用の「公開ヘルス」も欲しい場合
+
+管理ヘッダ無しでも**長さだけ**見たい時は、開発中だけ下を使ってOKです（ファイル丸ごと置き換え）。  
+`/Users/m-aoki/Downloads/distribution-lottery-app/backend/routes/adminDebug.js`：
+
+```js
+// backend/routes/adminDebug.js （置き換え）
+const express = require("express");
+const crypto = require("crypto");
+const adminAuth = require("../middleware/adminAuth");
+
+function fp(s) {
+  if (!s) return null;
+  return crypto.createHash("sha256").update(s).digest("hex").slice(0, 8);
+}
+
+const router = express.Router();
+
+// 認証あり: 詳細
+router.get("/env", adminAuth, (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({
+    adminSecretLength: s.length,
+    adminSecretSha256_8: fp(s),
+    cwd: process.cwd(),
+    __dirname: __dirname,
+    pid: process.pid,
+    node: process.version,
+  });
+});
+
+// 認証なし: 長さだけ（開発用）
+router.get("/public", (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({ adminSecretLength: s.length });
+});
+
+module.exports = router;
+```
+
+サーバ再起動後、ヘッダ無しで:
+```bash
+echo '# 公開：長さだけ確認'
+curl -sS http://localhost:3001/api/admin-debug/public
+```
+
+---
+
+要点：
+- 今の `Unauthorized (invalid admin secret)` は**ヘッダ無しで叩いているため**です。
+- 上の `curl -H "x-admin-secret: $ADMIN"` を使えば通ります。
+- それでも通らない時は、起動ログの長さと、送信ヘッダの実物を確認して原因を一気に絞り込みましょう。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# backend/.env から ADMIN_SECRET を読み込む（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 管理ヘッダ付きで /api/admin-debug/env を叩く'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+# backend/.env から ADMIN_SECRET を読み込む（値は表示しない）
+# 管理ヘッダ付きで /api/admin-debug/env を叩く
+{
+  "error": "Unauthorized (invalid admin secret)"
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+OK、原因はほぼこれです：**サーバ側が保持している ADMIN_SECRET が “短い別値（=13文字）” のまま**。  
+なのでクライアントから 31 文字を送っても一致せず 401 になります。まずは **サーバを“完全クリーン環境”で正しい値を注入して起動**→その後に叩いて一致確認、の順で一気に直します。
+
+下のコマンド群をそのままコピペで実行してください（# は echo 表示だけ）。
+
+```bash
+echo '# 1) backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 2) .env から値を安全に取り出す（末尾空白/CR除去）'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+DBURL="$(grep -E '^DATABASE_URL=' .env  | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# ADMIN 長さ: ${#ADMIN} / DBURL 長さ: ${#DBURL}"
+
+echo '# 3) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 4) 完全クリーン環境で起動（継承環境変数を全て捨てる）'
+#   → これで “どこかに残っていた短い ADMIN_SECRET” の影響を断ち切れます
+env -i NODE_ENV=development PORT=3001 ADMIN_SECRET="$ADMIN" DATABASE_URL="$DBURL" node index.js
+```
+
+↑ この起動ログが
+
+```
+[boot] ADMIN_SECRET configured? YES (length=31)
+```
+
+になっていることを確認してください。ここが **length=31** になれば、もう 401 は出ません。
+
+続いて、**同じシークレットを送って**照合します（別ターミナル＝コマンド用ターミナルで）：
+
+```bash
+echo '# 5) backend/.env から再度 ADMIN を読み出し（同じ整形）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# 送信用 ADMIN 長さ: ${#ADMIN}"
+
+echo '# 6) 認証ヘッダ付きで /api/admin-debug/env を叩く（OKなら内容が返る）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+
+echo '# 7) （保険）Authorization: Bearer でも同じ値で通ることを確認'
+curl -sS -H "Authorization: Bearer $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "Authorization: Bearer $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+### それでも認証が通らない場合（追加チェック）
+
+```bash
+echo '# A) サーバが読んでいる ADMIN の長さを“公開”で見る（開発中だけ実施）'
+# もし /api/admin-debug/public を入れていなければ、暫定で /api/admin-debug/env にヘッダなしで飛ばすのではなく、
+# すぐ下の「暫定: public エンドポイント追加」コードを入れて再起動してください。
+curl -sS http://localhost:3001/api/admin-debug/public || echo '# ← 404なら未実装'
+```
+
+**暫定: public エンドポイントを追加したい場合**（置き換えファイル。既にあるなら不要）  
+`backend/routes/adminDebug.js` を**丸ごと**以下で置き換え → サーバ再起動：
+
+```js
+// backend/routes/adminDebug.js （全部置き換え）
+const express = require("express");
+const crypto = require("crypto");
+const adminAuth = require("../middleware/adminAuth");
+
+function fp(s) {
+  if (!s) return null;
+  return crypto.createHash("sha256").update(s).digest("hex").slice(0, 8);
+}
+
+const router = express.Router();
+
+// 認証あり: 詳細
+router.get("/env", adminAuth, (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({
+    adminSecretLength: s.length,
+    adminSecretSha256_8: fp(s),
+    cwd: process.cwd(),
+    __dirname: __dirname,
+    pid: process.pid,
+    node: process.version,
+  });
+});
+
+// 認証なし: 長さだけ（開発用）
+router.get("/public", (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({ adminSecretLength: s.length });
+});
+
+module.exports = router;
+```
+
+### 参考：今後のハマりどころを潰すコツ
+- **dotenv の呼び出しは index.js の1箇所だけ**に統一（`db.js` などには置かない）←あなたの環境は既に修正OK。
+- `.env` を編集した直後は、**必ずサーバ再起動**。
+- シークレット読取は `tr -d '\r' | sed 's/[[:space:]]*$//'` で末尾の余計な文字を除去。
+- 起動は **env -i** を使うと“どこかに残っていた古い環境変数”の影響を遮断できます。
+
+---
+
+ここまでやれば `/api/admin-debug/env` が通るはず。  
+通ったら**管理作成 API**もそのまま成功します：
+
+```bash
+echo '# 管理API: 新規賞品の作成（201=作成 / 409=重複）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B999","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+結果やログ（`length=??`）を貼ってくれれば、必要に応じて次の修正まで一気に出します。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % >....                     
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 2) .env から値を安全に取り出す（末尾空白/CR除去）'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+DBURL="$(grep -E '^DATABASE_URL=' .env  | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# ADMIN 長さ: ${#ADMIN} / DBURL 長さ: ${#DBURL}"
+
+echo '# 3) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 4) 完全クリーン環境で起動（継承環境変数を全て捨てる）'
+#   → これで “どこかに残っていた短い ADMIN_SECRET” の影響を断ち 切れます
+env -i NODE_ENV=development PORT=3001 ADMIN_SECRET="$ADMIN" DATABASE_URL="$DBURL" node index.js
+# 1) backend ディレクトリへ
+# 2) .env から値を安全に取り出す（末尾空白/CR除去）
+# ADMIN 長さ: 31 / DBURL 長さ: 176
+# 3) 3001 を使っているプロセスを停止
+# 4) 完全クリーン環境で起動（継承環境変数を全て捨てる）
+zsh: command not found: #
+env: node: No such file or directory
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+ありがとう、原因わかったよ。  
+貼り付けたブロックが失敗した理由は2つ：
+
+1) `env -i` が **PATH まで空**にしたので `node` が見つからず `env: node: No such file or directory`。  
+2) 貼り付け時に余計な制御文字が混ざり、行頭の `#` が壊れて `zsh: command not found: #` が出たっぽい。
+
+### 正しいやり方（PATH を明示・コメントは `echo` 表示）
+下のコマンドを **そのまま順にコピペ**して実行してください。`node` のフルパスと PATH を与えた「完全クリーン起動」です。
+
+```bash
+echo '# 1) backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 2) .env から値を安全に取り出す（末尾CR/空白除去）'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+DBURL="$(grep -E '^DATABASE_URL=' .env  | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# ADMIN 長さ: ${#ADMIN} / DBURL 長さ: ${#DBURL}"
+
+echo '# 3) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 4) node のフルパスを取得（例: /opt/homebrew/bin/node）'
+NODE_BIN="$(command -v node)"
+echo "# NODE_BIN = $NODE_BIN"
+
+echo '# 5) 完全クリーン環境で起動（PATH と node フルパスを明示）'
+#    ※ Homebrew/Mac の典型PATHを明示して node を見つけさせる
+env -i \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  NODE_ENV=development \
+  PORT=3001 \
+  ADMIN_SECRET="$ADMIN" \
+  DATABASE_URL="$DBURL" \
+  "$NODE_BIN" index.js
+```
+
+起動ログが必ずこうなるのを確認してください：
+```
+[boot] ADMIN_SECRET configured? YES (length=31)
+```
+
+### 起動後の確認（別ターミナル＝コマンド用）
+```bash
+echo '# backend/.env から再度 ADMIN を読み出し（同じ整形）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# 送信用 ADMIN 長さ: ${#ADMIN}"
+
+echo '# 管理デバッグAPIでサーバ側認識を確認（認証あり）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+これで 401 が消えて、`adminSecretLength: 31` や簡易情報が返ればOK。その後は通常どおり管理APIを叩いてください：
+
+```bash
+echo '# サンプル: 新規賞品作成（201=作成 / 409=重複）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+#### メモ
+- 以後、クリーン起動を続けたい場合は毎回「手順 1～5」を使えば、古い環境変数に引きずられません。  
+- `zsh: command not found: #` が出るのは、貼り付け時に制御文字が混ざるのが原因なので、**必ず上記のように `echo '# ...'` でコメント表示**する形式にしておけば安全です。  
+- もしまだ `[boot] ... length=13` が出るなら、**別ファイル `.env` を読んでいる・プロジェクトを間違えている**可能性が高いので、`pwd` と `ls -la .env` を貼ってください。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % >....                     
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 4) node のフルパスを取得（例: /opt/homebrew/bin/node）'
+NODE_BIN="$(command -v node)"
+echo "# NODE_BIN = $NODE_BIN"
+
+echo '# 5) 完全クリーン環境で起動（PATH と node フルパスを明示）'
+#    ※ Homebrew/Mac の典型PATHを明示して node を見つけさせる
+env -i \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  NODE_ENV=development \
+  PORT=3001 \
+  ADMIN_SECRET="$ADMIN" \
+  DATABASE_URL="$DBURL" \
+  "$NODE_BIN" index.js
+# 1) backend ディレクトリへ
+# 2) .env から値を安全に取り出す（末尾CR/空白除去）
+# ADMIN 長さ: 31 / DBURL 長さ: 176
+# 3) 3001 を使っているプロセスを停止
+# 4) node のフルパスを取得（例: /opt/homebrew/bin/node）
+# NODE_BIN = /opt/homebrew/bin/node
+# 5) 完全クリーン環境で起動（PATH と node フルパスを明示）
+zsh: command not found: #
+[dotenv@17.2.1] injecting env (5) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+[boot] ADMIN_SECRET configured? YES (length=13)
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+うん、そのログだと **`.env` の値（31文字）を起動時に “別の値（13文字）で上書き”** されています。主因はこれ👇の2つのどちらか（あるいは両方）です。
+
+1) **`dotenv.config({ override: true })`** のせいで、**起動時に .env が OS の環境変数を上書き**している  
+2) **`.env.local` など別ファイル**に、長さ13の `ADMIN_SECRET` が残っていて **それが読まれている**
+
+なので、まずは “環境変数優先” に直します。  
+（あなたの希望どおり「全部置き換え」手順で出します）
+
+---
+
+# 1) backend/index.js を置き換え（`.env` が環境変数を上書きしない）
+
+下記を **`~/Downloads/distribution-lottery-app/backend/index.js` に丸ごと貼り替え**てください。  
+ポイントは **`override: false`** と **単一の `.env` のみ読み込み**です。
+
+```js
+// backend/index.js ーーー 全置き換え版
+
+// 1) 必要モジュール
+const express = require("express");
+const path = require("path");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+
+// 2) .env を読み込む（環境変数より優先しない = override:false）
+try {
+  const dotenv = require("dotenv");
+  const envPath = path.join(__dirname, ".env"); // backend/.env を明示
+  dotenv.config({
+    path: envPath,
+    override: false, // ★重要: 既に渡された環境変数を上書きしない
+  });
+} catch (_) {
+  // dotenv 未インストールでも起動できるように
+}
+
+// 3) ルーターは .env ロード後に require
+const prizesRouter = require("./routes/prizes");
+const entriesRouter = require("./routes/entries");
+const lotteryRouter = require("./routes/lottery");
+
+// 管理デバッグ: サーバが見ている ADMIN_SECRET の長さを出すための簡易ルータ
+const adminAuth = require("./middleware/adminAuth");
+const adminDebug = require("express").Router();
+adminDebug.get("/env", adminAuth, (req, res) => {
+  const s = process.env.ADMIN_SECRET || "";
+  res.json({
+    adminSecretLength: s.length,
+    pid: process.pid,
+    node: process.version,
+    cwd: process.cwd(),
+  });
+});
+
+// 4) アプリ本体
+const app = express();
+app.use(
+  cors({
+    origin: "*",
+    credentials: true,
+    allowedHeaders: [
+      "Content-Type",
+      "X-Requested-With",
+      "Authorization",
+      "x-admin-secret",
+    ],
+  })
+);
+app.use(bodyParser.json());
+
+// 5) API ルート
+app.use("/api/prizes", prizesRouter);
+app.use("/api/entries", entriesRouter);
+app.use("/api/lottery", lotteryRouter);
+app.use("/api/admin-debug", adminDebug);
+
+// 6) フロントエンド（build）配信 & SPA フォールバック
+const frontendBuild = path.join(__dirname, "..", "frontend", "build");
+app.use(express.static(frontendBuild));
+// Express 5（path-to-regexp v6）は "*" が使えないので正規表現でフォールバック
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.sendFile(path.join(frontendBuild, "index.html"), (err) => {
+    if (err) res.status(500).send(err);
+  });
+});
+
+// 7) 起動ログ（ADMIN_SECRET は長さのみ）
+const adminLen = (process.env.ADMIN_SECRET || "").length;
+console.log(
+  `[boot] ADMIN_SECRET configured? ${adminLen >= 8 ? "YES" : "NO"} (length=${adminLen})`
+);
+
+// 8) 起動
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Lottery backend (DB) running on port ${PORT}`);
+});
+```
+
+---
+
+# 2) 余計な .env 系ファイルがないか確認
+
+```bash
+echo '# backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# .env* を確認（.env.local 等があれば内容チェック）'
+ls -la .env*
+grep -n "ADMIN_SECRET" .env* || true
+```
+
+- **`.env.local` があって `ADMIN_SECRET=` を含む**なら、行を消すかファイルごと一旦リネーム/削除してください（テスト用なら削除でOK）。
+
+---
+
+# 3) “完全クリーン起動”（OSの環境変数を優先させて確認）
+
+```bash
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# .env から値を安全に取り出す（CR/末尾空白除去）'
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+DBURL="$(grep -E '^DATABASE_URL=' .env  | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+echo "# ADMIN 長さ: ${#ADMIN} / DBURL 長さ: ${#DBURL}"
+
+echo '# node のフルパスを取得'
+NODE_BIN="$(command -v node)"
+echo "# NODE_BIN = $NODE_BIN"
+
+echo '# 完全クリーン環境で起動（PATH と node を明示）'
+env -i \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  NODE_ENV=development \
+  PORT=3001 \
+  ADMIN_SECRET="$ADMIN" \
+  DATABASE_URL="$DBURL" \
+  "$NODE_BIN" index.js
+```
+
+起動ログが **`[boot] ADMIN_SECRET ... (length=31)`** になれば成功。
+
+---
+
+# 4) 管理デバッグAPIでサーバ側の認識を確認（別ターミナルで）
+
+```bash
+echo '# backend/.env から ADMIN を読み出し'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')"
+
+echo '# サーバの認識（長さ）が 31 になっているか確認'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+`adminSecretLength: 31` が返れば、以降の **管理API（作成/更新/CSV投入など）** が 401/403 にならず動きます。
+
+---
+
+## もしまだ length=13 になる場合のチェック
+
+- **`.env.local` が残っていないか**（再確認）
+- **別のプロジェクト（旧 comiket-lottery-app）を起動していないか**  
+  → `lsof -i :3001` で PID を確認し、作業中プロジェクトの Node だけが立っていることを確認
+- **`.env` に重複行が無いか**  
+  → `nl -ba .env` で行番号付き表示、`ADMIN_SECRET=` の行が **1つだけ** であることを確認
+
+---
+
+必要なら、このあと **管理APIのテスト用 curl（echo 形式）** も続けて出します。まずは上の置き換え＋クリーン起動で **length=31** にできるか試してみてください。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# .env* を確認（.env.local 等があれば内容チェック）'
+ls -la .env*
+grep -n "ADMIN_SECRET" .env* || true
+# backend ディレクトリへ
+# .env* を確認（.env.local 等があれば内容チェック）
+-rw-r--r--@ 1 m-aoki  staff  879  8 19 13:21 .env
+20:ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+原因わかった！  
+**.env では `#` はコメント開始**なので、あなたのシークレット
+
+```
+ADMIN_SECRET=R7q$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ
+```
+
+は `#` の手前まで（`R7q$2bZ_8uVxP`）しか読まれておらず、**長さ13**になっていました。  
+→ 値を**クォート**すればOKです（`$` もそのまま保持されます）。
+
+以下をそのままコピペで実行してください（バックエンドのターミナルで）。
+
+```bash
+echo '# backend に移動'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# .env の ADMIN_SECRET をシングルクォートで囲んで安全に書き直す'
+# 既存行を削除
+sed -i '' '/^ADMIN_SECRET=/d' .env
+# 新しい行を追記（シングルクォートでコメント扱いを防ぐ）
+printf "ADMIN_SECRET='R7q\$2bZ_8uVxP#4nM9cK3yD@6tFjEwQ'\n" >> .env
+
+echo '# 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# バックエンド起動（.env を再読込）'
+PORT=3001 node index.js
+```
+
+起動ログの例：
+```
+[boot] ADMIN_SECRET configured? YES (length=31)
+```
+と出れば成功です。
+
+動作確認（別ターミナル＝コマンド用）：
+
+```bash
+echo '# 管理シークレットを .env から読み込み（表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | sed "s/^'//; s/'$//")"
+
+echo '# 管理デバッグ: サーバが認識している長さを確認（length=31 期待）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+
+echo '# 管理API: 新規賞品を作成（201 か 409 を期待）'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B998","name":"管理テスト","result_time_jst":"2025-08-25 12:00"}'
+```
+
+ポイントまとめ
+- `.env` の値に **`#` を含む場合は必ずクォート**（`'...'` か `"..."`）  
+- 既存の短い値に引きずられないよう、**再起動前に 3001 のプロセスを必ず落とす**  
+- テスト時は `/api/admin-debug/env` で **認識長さ** を見ると早い（今回は 31 が正）
+
+---
+
+user:
+えっと、パスワードに含めるべきじゃない文字をパスワードに使わない方向にしない？
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+大賛成！**シェルや .env で意味を持つ文字（`#`, `!`, `"`, `'`, `\`, 空白 など）**を含まない“安全な文字だけ”のシークレット／パスワードにしましょう。  
+おすすめは **Base64URL セーフ**（`A–Z a–z 0–9 _ -` のみ）。引用不要・コマンド展開事故ゼロで扱えます。
+
+以下、**そのままコピペで安全に入替**できます（`echo`は表示だけ）。
+
+```bash
+echo '# 1) backend ディレクトリへ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 2) Base64URL セーフな強いシークレットを生成（長さ ~64 文字）'
+NEW_ADMIN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+echo "# 生成長さ: ${#NEW_ADMIN} chars"
+
+echo '# 3) .env の ADMIN_SECRET を安全に置き換え（引用不要・#問題回避）'
+sed -i '' '/^ADMIN_SECRET=/d' .env
+printf "ADMIN_SECRET=%s\n" "$NEW_ADMIN" >> .env
+
+echo '# 4) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 5) バックエンド再起動（.env を読ませる）'
+PORT=3001 node index.js
+# ← 起動ログ: [boot] ADMIN_SECRET configured? YES (length=**31以上**) を確認
+```
+
+別ターミナル（コマンド用）で疎通確認：
+
+```bash
+echo '# 6) .env から送信用シークレットを読み出し'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo '# 7) 管理デバッグ: サーバの認識を確認（200 が返ればOK）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+---
+
+## 「使わない方がよい文字」リスト（.env/シェルで危険）
+- `#`（.env でコメント開始になる）
+- `!`（zsh のヒストリ展開）
+- 空白・タブ・改行（意図せず切断）
+- `'` / `"` / `\`（引用/エスケープ地獄）
+- `$`（展開対象。Base64URLでは不要だが、入っててもダブルクォートで回避可）
+
+👉 **Base64URL セーフ**（`[A-Za-z0-9_-]`）なら一切気にせず運用できます。  
+※ ユーザー用パスワード（参加者の入力）は、いままで通り **数字のみ**（例: 4桁）で OK。
+
+---
+
+## おまけ：回転（ローテーション）を滑らかにしたい？
+一時的に**旧・新の2つ**を受け付ける設計も可能です（後で旧を外す）。  
+`backend/middleware/adminAuth.js` を以下のイメージにすると、カンマ区切りで複数値を許容できます（必要になったら言ってください。**全置き換え版**を出します）。
+
+```js
+const SERVER_SECRETS = (process.env.ADMIN_SECRET || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+if (SERVER_SECRETS.includes(headerSecret) || SERVER_SECRETS.includes(bearer)) {
+  return next();
+}
+```
+
+`.env` 側は `ADMIN_SECRET=新値,旧値` とすればOK（Base64URL セーフ前提）。
+
+---
+
+必要なら、**Render ダッシュボードの環境変数**にも同じ値を設定（`ADMIN_SECRET`）して再デプロイすれば、クラウド側とも一貫します。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % >....                     
+字）'
+NEW_ADMIN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+echo "# 生成長さ: ${#NEW_ADMIN} chars"
+
+echo '# 3) .env の ADMIN_SECRET を安全に置き換え（引用不要・#問 題回避）'
+sed -i '' '/^ADMIN_SECRET=/d' .env
+printf "ADMIN_SECRET=%s\n" "$NEW_ADMIN" >> .env
+
+echo '# 4) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 5) バックエンド再起動（.env を読ませる）'
+PORT=3001 node index.js
+# ← 起動ログ: [boot] ADMIN_SECRET configured? YES (length=**31以上**) を確認
+# 1) backend ディレクトリへ
+# 2) Base64URL セーフな強いシークレットを生成（長さ ~64 文字）
+# 生成長さ: 64 chars
+# 3) .env の ADMIN_SECRET を安全に置き換え（引用不要・#問題回避）
+# 4) 3001 を使っているプロセスを停止
+# 5) バックエンド再起動（.env を読ませる）
+[dotenv@17.2.1] injecting env (1) from .env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[boot] ADMIN_SECRET configured? NO (length=0)
+Lottery backend (DB) running on port 3001
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解、そのログは「`.env` を読んだのに `ADMIN_SECRET` が空（長さ 0）」という状態です。  
+原因はほぼ **`.env` の `ADMIN_SECRET=` 行が壊れている（消えた/コメント化/改行コード混入/全角空白入り）** か、**起動ディレクトリが違う** のどちらかです。  
+以下の“そのまま貼れる”手順で **確認→修復→再起動→疎通確認** を一気にやりましょう。
+
+---
+
+### A) まず確認（中身は出さずに形式だけチェック）
+```bash
+echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 1) .env の ADMIN_SECRET 行を可視化（制御文字/全角空白/BOM を見る）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v || echo '# ← 行が無い（消えている）'
+
+echo '# 2) その行の値の長さだけ確認（0 なら空）'
+awk -F= '/^ADMIN_SECRET=/{print "# 長さ:", length($2), "chars"}' .env || true
+
+echo '# 3) いま index.js が読む .env は本当にここか？起動時カレントを表示'
+node -e "console.log('cwd=',process.cwd())"
+```
+
+- `cat -v` で `^M`（CRLF）や **全角スペース**、BOM を発見できます。
+- 長さが `0` なら dotenv は読んでいるが **空値** になっています。
+
+---
+
+### B) 壊れた `.env` を安全再生成（既存の他キーは保持）
+> ※ **ADMIN_SECRET だけ**を再発行・置換します。`DATABASE_URL` などは保ちます。
+
+```bash
+echo '# 4) 既存 .env をバックアップ'
+cp -p .env .env.bak.$(date +%Y%m%d-%H%M%S)
+
+echo '# 5) Base64URL セーフな強い値を生成（+ / = を排除）'
+NEW_ADMIN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+echo "# 生成長さ: ${#NEW_ADMIN} chars"
+
+echo '# 6) 行末 CR 等を除去したクリーン .env を作成（ADMIN_SECRET を除外→最後に追記）'
+#   - 先に CR を落とす
+tr -d '\r' < .env.bak.* | \
+#   - ADMIN_SECRET 行を除去
+grep -vE '^[[:space:]]*ADMIN_SECRET=' > .env.clean.tmp
+
+echo '# 7) 新しい ADMIN_SECRET を末尾に追記（先頭/末尾空白なし）'
+printf "ADMIN_SECRET=%s\n" "$NEW_ADMIN" >> .env.clean.tmp
+
+echo '# 8) 原子的に置換'
+mv .env.clean.tmp .env
+
+echo '# 9) 結果確認（制御文字可視化 & 長さ）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+awk -F= '/^ADMIN_SECRET=/{print "# 長さ:", length($2), "chars"}' .env
+```
+
+---
+
+### C) クリーンに再起動して読み込み確認
+```bash
+echo '# 10) 3001 を使っているプロセスを停止'
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo '# 11) バックエンドを .env だけで起動（他の環境変数の影響を排除）'
+PORT=3001 node index.js
+# ← 起動ログに [boot] ADMIN_SECRET configured? YES (length=**31以上**) が出ればOK
+```
+
+もしまだ `length=0` なら **起動ディレクトリが違う**可能性が高いです。必ず
+```
+cd ~/Downloads/distribution-lottery-app/backend
+```
+の上で `PORT=3001 node index.js` を実行してください。`cwd= ...` の確認も上の A-3 で出しています。
+
+---
+
+### D) 実際に管理 API で疎通チェック
+別ターミナル（コマンド用）で：
+
+```bash
+echo '# 12) .env からシークレットを読み出し（値は表示しない）'
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2- | tr -d '\r')"
+
+echo '# 13) 管理デバッグ API で長さと指紋（8桁）を確認（200 が返ればOK）'
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+期待例：
+```json
+{
+  "adminSecretLength": 64,
+  "adminSecretSha256_8": "1a2b3c4d",
+  "cwd": ".../backend",
+  "__dirname": ".../backend/routes",
+  "pid": 12345,
+  "node": "v18.x"
+}
+```
+
+---
+
+### それでもダメだったら（ほぼ無いはず）
+- **フルパス起動**で “このシェルだけに値を直渡し” してみて、ログの長さが 0→64 になるか確認：
+```bash
+echo '# 念のため直渡し起動（.env を無視して確実に一致させる）'
+ADMIN_SECRET="$ADMIN" PORT=3001 node index.js
+```
+ここで YES & 長さ>0 なら、**.env の場所 / 改行 / 余計な空白** の問題が確実です。上の再生成手順をもう一度行えば直ります。
+
+---
+
+必要なら、`.env` を**丸ごと置き換え**（安全テンプレ＋あなたの `DATABASE_URL` 反映）もすぐ出します。まずは上の “確認→再生成→再起動→疎通” を一発でやってみてください。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo '# backend へ'
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo '# 1) .env の ADMIN_SECRET 行を可視化（制御文字/全角空白/BOM を見る）'
+grep -nE '^ADMIN_SECRET=' .env | cat -v || echo '# ← 行が無い（消えている）'
+
+echo '# 2) その行の値の長さだけ確認（0 なら空）'
+awk -F= '/^ADMIN_SECRET=/{print "# 長さ:", length($2), "chars"}' .env || true
+
+echo '# 3) いま index.js が読む .env は本当にここか？起動時カレントを表示'
+node -e "console.log('cwd=',process.cwd())"
+# backend へ
+# 1) .env の ADMIN_SECRET 行を可視化（制御文字/全角空白/BOM を見る）
+# 2) その行の値の長さだけ確認（0 なら空）
+# 3) いま index.js が読む .env は本当にここか？起動時カレントを表示
+cwd= /Users/m-aoki/Downloads/distribution-lottery-app/backend
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+見えてるログだと、**.env に ADMIN_SECRET 行が存在しない（grep で出ない）**ので、まず `.env` に正しい行を作り直しましょう。下を “そのまま貼り付け” でOKです。
+
+```bash
+echo "# backend へ"
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo "# 1) 既存 .env をバックアップ"
+cp -p .env .env.bak.$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+
+echo "# 2) Base64URL セーフな強いシークレット生成（! や = を含まない）"
+NEW_ADMIN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+echo "# 生成長さ: ${#NEW_ADMIN} chars"
+
+echo "# 3) .env の ADMIN_SECRET 行を削除→新しい値を書き込む（CR除去）"
+#   ※ macOS の sed -i は拡張子必須なので '' を渡しています
+sed -i '' '/^ADMIN_SECRET=/d' .env
+printf "ADMIN_SECRET=%s\n" "$NEW_ADMIN" >> .env
+# 念のため CR を排除
+perl -pi -e 's/\r$//' .env
+
+echo "# 4) 追加された行を可視化確認＆長さ確認"
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+awk -F= '/^ADMIN_SECRET=/{print "# 長さ:", length($2), "chars"}' .env
+```
+
+次に、**バックエンド再起動**（既存プロセスを止めてから起動）：
+
+```bash
+echo "# 5) 3001 を使っているプロセスを停止"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo "# 6) 念のためシェル環境の ADMIN_SECRET を消す（混入対策）"
+unset ADMIN_SECRET
+
+echo "# 7) 再起動（.env を読む）"
+PORT=3001 node index.js
+# ← 起動ログ: [boot] ADMIN_SECRET configured? YES (length=**30〜80前後**) を期待
+```
+
+最後に、**管理APIで疎通確認**：
+
+```bash
+echo "# 8) .env からシークレットを読み出し（表示しない）"
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 9) /api/admin-debug/env を叩いて長さ/指紋を確認（200が返ればOK）"
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+#### もし起動ログがまだ `length=13` のままなら
+- どこかで **環境変数 ADMIN_SECRET が上書き** されています。次を実行して残存を除去→再起動してください。
+
+```bash
+echo "# シェル環境に残っていないか確認"
+env | grep -E '^ADMIN_SECRET=' || echo "# ← 無ければOK"
+
+echo "# 念のためクリア"
+unset ADMIN_SECRET
+
+echo "# 再起動"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+PORT=3001 node index.js
+```
+
+ここまでで **`/api/admin-debug/env` が 200 で `adminSecretLength` が 30 以上** になれば完了です。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % >....                                               
+echo "# 1) 既存 .env をバックアップ"
+cp -p .env .env.bak.$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+
+echo "# 2) Base64URL セーフな強いシークレット生成（! や = を含まない）"
+NEW_ADMIN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+echo "# 生成長さ: ${#NEW_ADMIN} chars"
+
+echo "# 3) .env の ADMIN_SECRET 行を削除→新しい値を書き込む（CR除去）"
+#   ※ macOS の sed -i は拡張子必須なので '' を渡しています
+sed -i '' '/^ADMIN_SECRET=/d' .env
+printf "ADMIN_SECRET=%s\n" "$NEW_ADMIN" >> .env
+# 念のため CR を排除
+perl -pi -e 's/\r$//' .env
+
+echo "# 4) 追加された行を可視化確認＆長さ確認"
+grep -nE '^ADMIN_SECRET=' .env | cat -v
+awk -F= '/^ADMIN_SECRET=/{print "# 長さ:", length($2), "chars"}' .env
+# backend へ
+# 1) 既存 .env をバックアップ
+# 2) Base64URL セーフな強いシークレット生成（! や = を含まない）
+# 生成長さ: 64 chars
+# 3) .env の ADMIN_SECRET 行を削除→新しい値を書き込む（CR除去）
+zsh: command not found: #
+zsh: command not found: #
+# 4) 追加された行を可視化確認＆長さ確認
+23:ADMIN_SECRET=lo1jkIAhYBR5YrW7vTEnf_sxbNytWnhJnjmupeaGzofdBYQP-xpbX1w-Xw6ufYNQ
+# 長さ: 64 chars
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね！`.env` に **64文字** の `ADMIN_SECRET` が入ったのを確認できています。  
+次は「バックエンド再起動 → 認証確認 → 管理APIで作成テスト」の順で進めましょう。全部コピペOK版（コメントは `echo` で表示）です。
+
+```bash
+echo "# 1) backend に移動"
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo "# 2) 3001番を使っているプロセスを停止（動いてなければ何も起きません）"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo "# 3) バックエンドを .env で起動（このターミナルは起動専用で開いたまま）"
+PORT=3001 node index.js
+```
+
+↑ この起動ターミナルのログに  
+`[boot] ADMIN_SECRET configured? YES (length=64)` が出ればOK。
+
+別のターミナル（コマンド用）で、認証とAPIを確認：
+
+```bash
+echo "# A) backend/.env から ADMIN_SECRET を読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# 読み取りOK（長さだけ表示）: ${#ADMIN} chars"
+
+echo "# B) 管理デバッグAPIでサーバ側が認識する長さ/指紋を確認（200が返ればOK）"
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+```
+
+期待例：
+```json
+{
+  "adminSecretLength": 64,
+  "adminSecretSha256_8": "xxxxxxxx",
+  ...
+}
+```
+
+問題なければ、管理APIで賞品を1件作成してみます（JST管理）：
+
+```bash
+echo "# C) 新規賞品を作成（201:作成 / 409:重複）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B777","name":"管理シークレット確認テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# D) 一覧で反映確認"
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+### 補足（なぜ以前 “zsh: command not found: #” が出た？）
+`#` から始まる行をそのまま貼ると **コメントじゃなくコマンド** として解釈されてエラーになります。  
+以後は今回のように **`echo "# ..."`** で表示専用にしてあります。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# A) backend/.env から ADMIN_SECRET を読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+echo "# 読み取りOK（長さだけ表示）: ${#ADMIN} chars"
+
+echo "# B) 管理デバッグAPIでサーバ側が認識する長さ/指紋を確認（200が返ればOK）"
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq . || \
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env
+# A) backend/.env から ADMIN_SECRET を読み込む（値は表示しない）
+# 読み取りOK（長さだけ表示）: 64 chars
+# B) 管理デバッグAPIでサーバ側が認識する長さ/指紋を確認（200が返ればOK）
+{
+  "adminSecretLength": 64,
+  "pid": 5524,
+  "node": "v24.6.0",
+  "cwd": "/Users/m-aoki/Downloads/distribution-lottery-app/backend"
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね！ログを見る限り、
+
+- サーバは backend/.env を読み込み済み
+- `ADMIN_SECRET` は **長さ 64** でサーバ側も認識（`/api/admin-debug/env` が 200）
+
+までOKです。  
+ここからは **管理APIが実運用で効くか** を一気に確認しましょう。全部コピペOK（コメントは `echo`）です。
+
+```bash
+echo "# 1) 変数に .env の ADMIN_SECRET を読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 2) 新しい賞品を作成（IDは未使用のものにする例: B777）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B777","name":"管理テスト（認証OK確認）","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# 3) 一覧で反映を確認（B777 が入っていればOK）"
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+### もし HTTP 500（Failed to create prize）が出たら
+管理認証は通っているので、**DB挿入で失敗**している可能性が高いです。主な原因はこのあたり：
+
+1) **重複ID**  
+同じ `id` が既にあると失敗します。← さきほどは B999 で 500 が出ていたので、まず **新ID（B777 など）**で試してください。
+
+2) **フィールド名の不一致**  
+このルートは **`result_time_jst`** を期待します（`publish_time_jst` ではなく）。上の例は `result_time_jst` を送っています ✅
+
+3) **日時のフォーマット**  
+`YYYY-MM-DD HH:mm`（例: `2025-08-25 12:00`）でOK。秒があっても可。
+
+それでも 500 の場合、サーバログにエラー詳細が出ているはずです（バックエンド起動中のターミナルを見てください）。  
+一時的に SQL エラー詳細を返すテスト用エンドポイントもあります：
+
+```bash
+echo "# 4) 管理デバッグ（環境確認・長さ/指紋など）"
+curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+```
+
+### 参加者データも連続確認（任意）
+```bash
+echo "# 5) B777 に 2名投入（001=当選, 002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B777","entry_number":"001","password":"1111","is_winner":true}'
+
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B777","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 6) B777 のエントリー一覧確認"
+curl -sS http://localhost:3001/api/entries/B777 | jq . || curl -sS http://localhost:3001/api/entries/B777
+```
+
+### 公開シミュレーション → 当落確認（任意）
+```bash
+echo "# 7) B777 を即公開（publish_time_utc を1分過去へ）"
+DBURL="$(grep -E '^DATABASE_URL=' .env | cut -d= -f2-)"
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B777';"
+
+echo "# 8) 当選者(001/1111)で確認 → 当選"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B777","entryNumber":"001","password":"1111"}'
+
+echo "# 9) 落選者(002/2222)で確認 → 落選"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B777","entryNumber":"002","password":"2222"}'
+```
+
+ここまで通れば、**管理認証 → 作成 → 参加者投入 → 公開 → 当落確認** のフローが完成です。  
+途中で 500 が出たら、**サーバログのエラーメッセージ**をそのまま貼ってください。すぐに原因を特定して修正案を出します。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 1) 変数に .env の ADMIN_SECRET を読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 2) 新しい賞品を作成（IDは未使用のものにする例: B777）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B777","name":"管理テスト（認証OK確認）","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# 3) 一覧で反映を確認（B777 が入っていればOK）"
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+# 1) 変数に .env の ADMIN_SECRET を読み込む（値は表示しない）
+# 2) 新しい賞品を作成（IDは未使用のものにする例: B777）
+{"error":"Failed to create prize","detail":"pool.query is not a function"}
+HTTP 500
+# 3) 一覧で反映を確認（B777 が入っていればOK）
+{
+  "error": "Failed to fetch prizes"
+}
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 1) backend に移動"
+cd ~/Downloads/distribution-lottery-app/backend
+
+echo "# 2) 3001番を使っているプロセスを停止（動いてなければ何も起きません）"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo "# 3) バックエンドを .env で起動（このターミナルは起動専用で開いたまま）"
+PORT=3001 node index.js
+# 1) backend に移動
+# 2) 3001番を使っているプロセスを停止（動いてなければ何も起きません）
+# 3) バックエンドを .env で起動（このターミナルは起動専用で開いたまま）
+[dotenv@17.2.1] injecting env (2) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+[boot] ADMIN_SECRET configured? YES (length=64)
+Lottery backend (DB) running on port 3001
+POST /api/prizes error: TypeError: pool.query is not a function
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/routes/prizes.js:90:33
+    at Layer.handleRequest (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:152:17)
+    at next (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/route.js:157:13)
+    at adminAuth (/Users/m-aoki/Downloads/distribution-lottery-app/backend/middleware/adminAuth.js:10:12)
+    at Layer.handleRequest (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:152:17)
+    at next (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/route.js:157:13)
+    at Route.dispatch (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/route.js:117:3)
+    at handle (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:435:11)
+    at Layer.handleRequest (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:152:17)
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:295:15
+GET /api/prizes error: TypeError: pool.query is not a function
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/routes/prizes.js:43:33
+    at Layer.handleRequest (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:152:17)
+    at next (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/route.js:157:13)
+    at Route.dispatch (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/route.js:117:3)
+    at handle (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:435:11)
+    at Layer.handleRequest (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/lib/layer.js:152:17)
+    at /Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:295:15
+    at processParams (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:582:12)
+    at next (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:291:5)
+    at router.handle (/Users/m-aoki/Downloads/distribution-lottery-app/backend/node_modules/router/index.js:186:3)
+
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+原因は **`pool` が `pg.Pool` のインスタンスになっていない（つまり `pool.query` が関数でない）** ことです。  
+`backend/db.js` のエクスポートと、各ルータでの読み込みが食い違っている可能性が高いので、**db 層と prizes ルータを“全部置き換え”**して揃えます。
+
+---
+
+# 1) `backend/db.js`（全部置き換え）
+
+```js
+// backend/db.js
+const { Pool } = require("pg");
+
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  console.warn("[db] DATABASE_URL is not set. Routes that hit DB will fail.");
+}
+
+const useSsl =
+  String(process.env.POSTGRES_SSL || "true").toLowerCase() !== "false";
+
+const pool = new Pool({
+  connectionString,
+  ssl: useSsl ? { rejectUnauthorized: false } : false,
+});
+
+// 便利関数：そのまま query を使えるようにもエクスポート
+const query = (text, params) => pool.query(text, params);
+
+module.exports = { pool, query };
+```
+
+ポイント
+- `module.exports = { pool, query }` として **両方**出します。
+- どのルータでも `const { query } = require("../db");` か `const { pool } = require("../db");` の **どちらでも**動くようにします。
+
+---
+
+# 2) `backend/routes/prizes.js`（全部置き換え）
+
+```js
+// backend/routes/prizes.js
+const express = require("express");
+const router = express.Router();
+const { query } = require("../db");
+const adminAuth = require("../middleware/adminAuth");
+const { jstToUtcIso, utcDateToJstText } = require("../time");
+
+// 一覧
+router.get("/", async (_req, res) => {
+  try {
+    const sql = `
+      SELECT
+        id, name, result_time_jst, publish_time_utc,
+        created_at, updated_at
+      FROM prizes
+      ORDER BY publish_time_utc ASC NULLS LAST, id ASC
+    `;
+    const { rows } = await query(sql);
+    // 表示用にJSTテキストも付与
+    const withView = rows.map((r) => ({
+      ...r,
+      jst_view_from_utc: r.publish_time_utc
+        ? utcDateToJstText(new Date(r.publish_time_utc))
+        : null,
+    }));
+    res.json(withView);
+  } catch (err) {
+    console.error("GET /api/prizes error:", err);
+    res.status(500).json({ error: "Failed to fetch prizes" });
+  }
+});
+
+// 取得（単体）
+router.get("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await query(
+      `SELECT id, name, result_time_jst, publish_time_utc, created_at, updated_at
+       FROM prizes WHERE id = $1`,
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    const r = rows[0];
+    res.json({
+      ...r,
+      jst_view_from_utc: r.publish_time_utc
+        ? utcDateToJstText(new Date(r.publish_time_utc))
+        : null,
+    });
+  } catch (err) {
+    console.error("GET /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to fetch prize" });
+  }
+});
+
+// 作成（管理認証）
+router.post("/", adminAuth, async (req, res) => {
+  try {
+    const { id, name, result_time_jst } = req.body || {};
+    if (!id || !name || !result_time_jst) {
+      return res.status(400).json({ error: "id, name, result_time_jst are required" });
+    }
+
+    // JST文字列 → UTC ISO
+    const utcIso = jstToUtcIso(result_time_jst);
+
+    const sql = `
+      INSERT INTO prizes (id, name, result_time_jst, publish_time_utc, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at
+    `;
+    const params = [id, name, result_time_jst, utcIso];
+
+    const { rows } = await query(sql, params);
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    // 重複は 409 で返す
+    if (err && err.code === "23505") {
+      return res.status(409).json({ error: "Duplicate id" });
+    }
+    console.error("POST /api/prizes error:", err);
+    res.status(500).json({ error: "Failed to create prize" });
+  }
+});
+
+// 更新（管理認証）
+router.put("/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, result_time_jst } = req.body || {};
+    if (!name && !result_time_jst) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
+
+    // 動的に更新
+    const sets = [];
+    const params = [];
+    let idx = 1;
+
+    if (name) {
+      sets.push(`name = $${idx++}`);
+      params.push(name);
+    }
+    if (result_time_jst) {
+      sets.push(`result_time_jst = $${idx++}`);
+      params.push(result_time_jst);
+
+      sets.push(`publish_time_utc = $${idx++}`);
+      params.push(jstToUtcIso(result_time_jst));
+    }
+
+    sets.push(`updated_at = NOW()`);
+
+    const sql = `
+      UPDATE prizes
+      SET ${sets.join(", ")}
+      WHERE id = $${idx}
+      RETURNING id, name, result_time_jst, publish_time_utc, created_at, updated_at
+    `;
+    params.push(id);
+
+    const { rows } = await query(sql, params);
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("PUT /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to update prize" });
+  }
+});
+
+// 削除（管理認証）
+router.delete("/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rowCount } = await query(`DELETE FROM prizes WHERE id = $1`, [id]);
+    if (!rowCount) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/prizes/:id error:", err);
+    res.status(500).json({ error: "Failed to delete prize" });
+  }
+});
+
+module.exports = router;
+```
+
+> 以後、**他のルータ（`entries.js` / `lottery.js` など）も `const { query } = require("../db");` に統一**すると同種エラーを防げます。  
+> もし `pool.query(...)` 派でいくなら、各ファイルで `const { pool } = require("../db");` に揃えてください。
+
+---
+
+# 3) 再起動 & 動作確認（そのまま貼り付け）
+
+```bash
+echo "# 1) backend に移動"
+/Users/m-aoki/Downloads/distribution-lottery-app/backend && pwd
+
+echo "# 2) 3001番を使っているプロセスを停止（動いてなければ何も起きません）"
+lsof -i :3001 -Pn | awk 'NR>1{print $2}' | xargs -r kill
+
+echo "# 3) バックエンドを起動（.env 読み込み）"
+PORT=3001 node index.js
+```
+
+別ターミナル（コマンド用）で:
+
+```bash
+echo "# API 一覧取得（200 を期待）"
+curl -sS -i http://localhost:3001/api/prizes
+
+echo "# ADMIN を読み込み"
+cd /Users/m-aoki/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 新規作成（IDは未使用の B7777 などに）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B7777","name":"pool修正テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# 一覧で反映確認"
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+```
+
+---
+
+これで `pool.query is not a function` は解消します。  
+もし他ルータでも同じエラーが出たら、そのファイルの先頭を **`const { query } = require("../db");` に直し、`await query(sql, params)` へ統一**してください。
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# API 一覧取得（200 を期待）"
+curl -sS -i http://localhost:3001/api/prizes
+
+echo "# ADMIN を読み込み"
+cd /Users/m-aoki/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 新規作成（IDは未使用の B7777 などに）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B7777","name":"pool修正テスト","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# 一覧で反映確認"
+curl -sS http://localhost:3001/api/prizes | jq . || curl -sS http://localhost:3001/api/prizes
+# API 一覧取得（200 を期待）
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Credentials: true
+Content-Type: application/json; charset=utf-8
+Content-Length: 502
+ETag: W/"1f6-X2JJf0W9ohNbuCpbCrHBUouq7wk"
+Date: Tue, 19 Aug 2025 05:16:42 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+[{"id":"A001","name":"サンプル賞品A","result_time_jst":"2025-08-19 10:26","publish_time_utc":"2025-08-19T01:25:44.659Z","created_at":"2025-08-19T01:15:57.508Z","updated_at":"2025-08-19T01:26:51.525Z","jst_view_from_utc":"2025-08-19 10:25"},{"id":"B001","name":"JST管理テスト（更新）","result_time_jst":"2025-08-19 13:00","publish_time_utc":"2025-08-19T03:22:53.692Z","created_at":"2025-08-19T01:31:50.195Z","updated_at":"2025-08-19T03:23:53.692Z","jst_view_from_utc":"2025-08-19 12:22"}]# ADMIN を読み込み
+# 新規作成（IDは未使用の B7777 などに）
+{"id":"B7777","name":"pool修正テスト","result_time_jst":"2025-08-25 12:00","publish_time_utc":"2025-08-25T03:00:00.000Z","created_at":"2025-08-19T05:16:43.009Z","updated_at":"2025-08-19T05:16:43.009Z"}
+HTTP 201
+# 一覧で反映確認
+[
+  {
+    "id": "A001",
+    "name": "サンプル賞品A",
+    "result_time_jst": "2025-08-19 10:26",
+    "publish_time_utc": "2025-08-19T01:25:44.659Z",
+    "created_at": "2025-08-19T01:15:57.508Z",
+    "updated_at": "2025-08-19T01:26:51.525Z",
+    "jst_view_from_utc": "2025-08-19 10:25"
+  },
+  {
+    "id": "B001",
+    "name": "JST管理テスト（更新）",
+    "result_time_jst": "2025-08-19 13:00",
+    "publish_time_utc": "2025-08-19T03:22:53.692Z",
+    "created_at": "2025-08-19T01:31:50.195Z",
+    "updated_at": "2025-08-19T03:23:53.692Z",
+    "jst_view_from_utc": "2025-08-19 12:22"
+  },
+  {
+    "id": "B7777",
+    "name": "pool修正テスト",
+    "result_time_jst": "2025-08-25 12:00",
+    "publish_time_utc": "2025-08-25T03:00:00.000Z",
+    "created_at": "2025-08-19T05:16:43.009Z",
+    "updated_at": "2025-08-19T05:16:43.009Z",
+    "jst_view_from_utc": "2025-08-25 12:00"
+  }
+]
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+よっしゃ！🎉  
+リクエストも 201、一覧にも **B7777** が反映されています。DB 経由＆認証付きの新規作成が正常に通りました。
+
+このまま「公開→当落確認」まで一気に動作確認しましょう。以下は“コマンド用ターミナル”にそのまま貼れます（`echo` 付き）。
+
+```bash
+echo "# 1) 参加者を投入（B7777: 001=当選, 002=落選）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B7777","entry_number":"001","password":"1111","is_winner":true}'
+
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B7777","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 2) 参加者一覧で確認（B7777）"
+curl -sS http://localhost:3001/api/entries/B7777 | jq . || curl -sS http://localhost:3001/api/entries/B7777
+
+echo "# 3) 公開時刻を“いまより1分過去”にして即公開（SQL直叩き）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B7777';"
+
+echo "# 4) 当選者(001/1111)で確認 → 当選メッセージが出ればOK"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B7777","entryNumber":"001","password":"1111"}'
+
+echo "# 5) 落選者(002/2222)で確認 → 落選メッセージが出ればOK"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B7777","entryNumber":"002","password":"2222"}'
+```
+
+フロントでもチェック：
+
+```bash
+echo "# ブラウザで管理一覧（B7777が出る＆QR保存も可）"
+open http://localhost:3000/admin
+
+echo "# 参加者ページ直リンク（B7777）"
+open "http://localhost:3000/p?prizeId=B7777"
+
+echo "# 一覧ページ（公開日時フォーマットの表示確認）"
+open http://localhost:3000/prizes
+```
+
+### 次やること（本番運用に向けて短リスト）
+- 管理用シークレットは **backend/.env** の `ADMIN_SECRET=` に保存済み ⇒ Render デプロイ時は**環境変数**に同じ値を設定（コードには入れない）。
+- 管理GUIの「CSV一括投入」で、当日の参加者をまとめて登録できます（重複保護つき）。
+- QR 作成は `/admin` の「QRをPNG保存」を利用（日本語フォーマットは既に対応済み）。
+
+ほかに追加したい運用フロー（例：抽選確定のロック、監査ログの閲覧UIなど）があれば、続けて組み込みます。
+
+---
+
+user:
+文言の修正とかは（本番運用に向けて短リスト）の後に、一気に伝えた方がいい？
+
+---
+
+system:
+
+
+---
+
+assistant:
+いい質問ですね 👍  
+
+結論から言うと **「文言修正系の細かい要望」は短リストが固まったあとに一気に出した方が効率的** です。  
+
+---
+
+### 理由
+1. **段階的に整理できる**
+   - まずは「機能面・動作の短リスト」を優先して洗い出し → 開発や修正の影響が大きい部分を先に固められます。
+   - その後に「文言修正・ラベル変更・表示調整」などの軽微な変更をまとめて依頼すれば、作業の優先度づけがはっきりします。
+
+2. **修正漏れを防げる**
+   - バラバラに依頼すると「ここ直ってるけど、あっちは忘れてた」が起きやすいです。
+   - まとめて伝えると、開発側もチェックリスト化しやすいです。
+
+3. **本番運用直前に集中確認できる**
+   - 文言はユーザー体験に直結する部分なので、本番前の「最終チェック」でまとめて直すのが効率的です。
+   - 途中で頻繁に変えると、フロントとバックの両方で混乱するリスクがあります。
+
+---
+
+### おすすめの流れ
+1. **短リスト（機能/運用上の必須修正）を固める**  
+2. **その後に「UI/文言の細かい修正リスト」をまとめて提示**  
+   - 例: 「管理画面の"当選者"を"当選番号"に変える」  
+   - 例: 「公開画面で日時フォーマットを`YYYY/MM/DD HH:mm`に統一」  
+3. **本番前チェックリストに統合**して一気に反映  
+
+---
+
+👉 質問です：  
+今考えている「短リスト」って、**機能的な修正（例: API挙動、認証、公開ロジックなど）** に絞っていますか？  
+それとも **UI/文言含めて全部の修正点の仮リスト** も並行で書き出している感じですか？
+
+---
+
+user:
+次やること（本番運用に向けて短リスト）
+	•	管理用シークレットは backend/.env の ADMIN_SECRET= に保存済み ⇒ Render デプロイ時は環境変数に同じ値を設定（コードには入れない）。
+	•	管理GUIの「CSV一括投入」で、当日の参加者をまとめて登録できます（重複保護つき）。
+	•	QR 作成は /admin の「QRをPNG保存」を利用（日本語フォーマットは既に対応済み）。
+
+---
+
+assistant:
+いいまとめですね！  
+この「次やること（本番運用に向けて短リスト）」は、本番導入の直前に押さえておくべきポイントをコンパクトに整理できています。  
+
+---
+
+## 短リスト内容の整理
+1. **管理用シークレット**  
+   - `backend/.env` に保存済み。  
+   - Render デプロイ時は環境変数に同じ値を設定する。  
+   - **コードに直書きしない運用ルール**を徹底することが重要。
+
+2. **管理GUIの CSV一括投入**  
+   - 当日の参加者をまとめて登録できる。  
+   - 重複保護が入っているため、再投入時も安全。  
+   - 運用時は「前日の参加者CSV」や「テスト用CSV」と混ざらないよう、ファイル管理に注意。
+
+3. **QR 作成機能**  
+   - `/admin` の「QRをPNG保存」で簡単に生成可能。  
+   - 日本語フォーマット（参加者名や賞品名など）に対応済み。  
+   - 事前にサンプル出力を確認して、印刷解像度やQRサイズが運用に適しているかチェックしておくと安心。
+
+---
+
+## 次にやるとよいこと（補足）
+- **チェックリスト化**  
+  本番当日のオペレーションで迷わないよう、  
+  - 「Render に ADMIN_SECRET が正しく入っているか」  
+  - 「CSV が最新参加者リストか」  
+  - 「QR PNG の保存先を決めているか」  
+  を確認するためのチェックリストを1枚作っておくと便利です。  
+
+- **最終動作確認**  
+  デプロイ後に  
+  1. CSV投入 → 管理画面で一覧確認  
+  2. QR発行 → スマホで読み取り確認  
+  3. 当落判定 → サンプル参加者で当選/落選チェック  
+  の一連テストを短時間で済ませられる状態にしておくと、安心して本番を迎えられます。  
+
+---
+
+👉 この「短リスト」に **文言修正や表示調整系も入れる予定**ですか？  
+それとも機能・運用面だけに絞って、**文言は別のリストでまとめる方針**にしますか？
+
+---
+
+user:
+文言は別リストで
+
+---
+
+assistant:
+了解しました 👍  
+
+では整理しておきますね。  
+
+---
+
+## リスト分けの方針
+- **機能・運用チェックリスト**（いまの「短リスト」）  
+  → 本番前に絶対に確認するべき設定や操作（ADMIN_SECRET, CSV投入, QR出力など）  
+
+- **文言修正リスト**（別に作成）  
+  → 管理画面や参加者ページでの日本語表記・メッセージテキストなど、  
+    本番前にまとめて一気にレビュー・修正する項目  
+
+---
+
+## このやり方のメリット
+- **混乱を防げる**  
+  技術的な設定と、UI/文言の調整を切り分けられる。  
+- **タスクの性質が違う**  
+  機能チェックは「やる・やらない」で明確だが、文言は「表現のニュアンスを検討する」性質が強いので別管理が向いている。  
+- **優先度付けしやすい**  
+  先に「機能チェックリスト」でシステム面を固めてから、落ち着いて「文言修正リスト」に取り組める。  
+
+---
+
+👉 ここで確認ですが、文言修正リストは  
+- 管理画面（/admin）だけ  
+- 参加者画面（/p, /prizes）も含む  
+どちらまで範囲に入れる予定ですか？
+
+---
+
+user:
+全部の文言修正リスト作りたい
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+いいね、**全部の文言修正リスト**を先にまとめておきましょう。  
+そのうえで、あとから一括で差し替えられるように **i18n（文言集約）ファイル**も用意します。  
+（今回は“新規ファイル作成”のみ。既存ファイルの全面置き換えはしません。）
+
+---
+
+# 文言修正リスト（全体・初版案）
+
+### 1) 共通ヘッダー / ナビ
+- タイトル（サイト名）  
+  - 現状: `抽選アプリ`  
+  - 提案: `配布抽選システム`（迷うなら現状維持でOK）
+- ナビ項目  
+  - `抽選予定一覧` → `抽選予定（参加者向け）`  
+  - `管理：賞品一覧` → `管理：賞品一覧・作成`  
+  - `管理：賞品一覧（デバッグ）` → `（開発者向け）デバッグ`
+
+### 2) 参加者向け：賞品一覧 `/prizes`
+- 見出し  
+  - 現状: `抽選予定の賞品一覧`  
+  - 提案: `抽選予定（参加者向け）`
+- 説明文  
+  - 現状: `※ 公開時刻（JST）になると、各賞品のページで結果を確認できます。`  
+  - 提案: `公開日時（JST）以降に、各賞品ページで抽選結果を確認できます。`
+- 各カードの日時表示  
+  - 現状: `公開日: 2025/08/19 13:00`  
+  - 提案: `公開日時（JST）: YYYY/MM/DD HH:mm`
+- 空状態  
+  - 現状: `現在、公開予定の抽選はありません。`  
+  - 提案: `現在、公開予定の抽選はありません。しばらくしてから再度ご確認ください。`
+
+### 3) 参加者向け：個別ページ `/p?prizeId=...`
+- 見出し  
+  - 現状: `抽選アプリ`  
+  - 提案: `抽選結果確認`
+- ラベル  
+  - `抽選番号` → `エントリー番号`  
+  - `結果を確認` → `結果を確認する`
+- ヒント（フォーム下）  
+  - 追加: `エントリー番号とパスワードは配布物のQRコード横をご確認ください。`
+- 結果メッセージ  
+  - 当選: `🎉 おめでとうございます！「{賞品名}」に当選しました！`（現状維持）  
+  - 落選: `残念ながら「{賞品名}」には当選しませんでした。`（現状維持）  
+  - 未公開: `抽選結果はまだ公開されていません。公開日時（JST）以降に再度お試しください。`  
+  - 不一致: `エントリーが見つかりません。番号とパスワードをご確認ください。`  
+  - 入力不足: `エントリー番号とパスワードを入力してください。`
+
+### 4) 管理：賞品一覧・作成 `/admin`
+- セクション見出し  
+  - `賞品の新規作成`（現状維持）  
+- 入力ラベル  
+  - `賞品ID（例: B002）`（現状維持）  
+  - `賞品名`（現状維持）  
+  - `公開日時（JST）` → `公開日時（JST）※現在時刻＋1時間が初期値`
+- ボタン  
+  - `作成する` → `賞品を作成`  
+- CSV一括投入  
+  - 見出し: `参加者エントリーの一括投入（CSV）`（現状維持）  
+  - 対象賞品IDラベル: `対象の賞品ID` → `対象の賞品ID（例: B001）`  
+  - 重複時の動作: `既存を維持（新規のみ追加）`（現状維持）  
+  - サンプル  
+    - 現状: `CSVフォーマット例（1行目はヘッダ必須）： entry_number,password,is_winner 001,1111,true 002,2222,false`  
+    - 提案（改行+コード風）  
+      ```
+      CSVフォーマット（1行目は必ずヘッダ）:
+      entry_number,password,is_winner
+      001,1111,true
+      002,2222,false
+      ```
+- 各賞品カード  
+  - `参加者ページを開く`（現状維持）  
+  - `QRをPNG保存` → `QRコードをPNGで保存`  
+  - 日時表示: `公開日時（JST）: YYYY/MM/DD HH:mm`
+
+### 5) 管理：編集（AdminEdit）
+- 見出し  
+  - `管理：賞品編集`  
+- ラベル  
+  - `賞品名`（現状維持）  
+  - `公開日時（JST）`（現状維持＋ヒント）`（例: 2025/08/25 12:00）`
+- ボタン  
+  - `保存` → `変更を保存`  
+  - `削除` → `この賞品を削除`（確認ダイアログ: `本当に削除しますか？参加者エントリーも削除されます。`）
+
+### 6) トースト/エラー
+- 成功  
+  - `保存しました。`  
+  - `作成しました。`  
+  - `CSVを取り込みました。`
+- 失敗  
+  - `通信エラーが発生しました。時間をおいて再度お試しください。`  
+  - `入力内容に誤りがあります。赤い項目を修正してください。`  
+  - `認証に失敗しました。管理シークレットを確認してください。`
+
+---
+
+# 文言を一元管理（新規ファイル追加）
+
+以下の 2 ファイルを **新規作成**してください。
+
+## 1) `frontend/src/locale/ja.js`（新規・全部コピペ）
+
+```js
+// frontend/src/locale/ja.js
+const ja = {
+  app: {
+    title: "配布抽選システム",
+    nav: {
+      prizes: "抽選予定（参加者向け）",
+      adminList: "管理：賞品一覧・作成",
+      adminDebug: "（開発者向け）デバッグ",
+    },
+  },
+  prizes: {
+    title: "抽選予定（参加者向け）",
+    note: "公開日時（JST）以降に、各賞品ページで抽選結果を確認できます。",
+    empty: "現在、公開予定の抽選はありません。しばらくしてから再度ご確認ください。",
+    publishAt: (txt) => `公開日時（JST）: ${txt}`,
+    openParticipant: "参加者ページを開く",
+    saveQrPng: "QRコードをPNGで保存",
+  },
+  participant: {
+    title: "抽選結果確認",
+    labels: {
+      entryNumber: "エントリー番号",
+      password: "パスワード",
+    },
+    hint: "エントリー番号とパスワードは配布物のQRコード横をご確認ください。",
+    check: "結果を確認する",
+    result: {
+      win: (name) => `🎉 おめでとうございます！「${name}」に当選しました！`,
+      lose: (name) => `残念ながら「${name}」には当選しませんでした。`,
+      notPublished: "抽選結果はまだ公開されていません。公開日時（JST）以降に再度お試しください。",
+      notFound: "エントリーが見つかりません。番号とパスワードをご確認ください。",
+      required: "エントリー番号とパスワードを入力してください。",
+    },
+  },
+  admin: {
+    title: "管理：賞品一覧・作成",
+    create: {
+      section: "賞品の新規作成",
+      id: "賞品ID（例: B002）",
+      name: "賞品名",
+      publishAt: "公開日時（JST）※現在時刻＋1時間が初期値",
+      submit: "賞品を作成",
+    },
+    csv: {
+      section: "参加者エントリーの一括投入（CSV）",
+      prizeId: "対象の賞品ID（例: B001）",
+      modeKeep: "既存を維持（新規のみ追加）",
+      sampleTitle: "CSVフォーマット（1行目は必ずヘッダ）：",
+      sampleCode: "entry_number,password,is_winner\n001,1111,true\n002,2222,false",
+    },
+    card: {
+      publishAt: (txt) => `公開日時（JST）: ${txt}`,
+      openParticipant: "参加者ページを開く",
+      saveQrPng: "QRコードをPNGで保存",
+      edit: "編集",
+    },
+    edit: {
+      title: "管理：賞品編集",
+      name: "賞品名",
+      publishAt: "公開日時（JST）",
+      save: "変更を保存",
+      delete: "この賞品を削除",
+      confirmDelete: "本当に削除しますか？参加者エントリーも削除されます。",
+    },
+    toast: {
+      saved: "保存しました。",
+      created: "作成しました。",
+      imported: "CSVを取り込みました。",
+      authFail: "認証に失敗しました。管理シークレットを確認してください。",
+      network: "通信エラーが発生しました。時間をおいて再度お試しください。",
+      invalid: "入力内容に誤りがあります。赤い項目を修正してください。",
+    },
+  },
+  common: {
+    required: "必須",
+    cancel: "キャンセル",
+    close: "閉じる",
+  },
+  format: {
+    // 例: format.publishJst("2025/08/19 13:00")
+    publishJst: (txt) => `公開日時（JST）: ${txt}`,
+  },
+};
+
+export default ja;
+```
+
+## 2) `frontend/src/locale/index.js`（新規・全部コピペ）
+
+```js
+// frontend/src/locale/index.js
+import ja from "./ja";
+
+// 単純な t 関数（今回は日本語固定）
+export const t = (path, ...args) => {
+  const segs = path.split(".");
+  let cur = ja;
+  for (const s of segs) {
+    if (cur == null) return path;
+    cur = cur[s];
+  }
+  if (typeof cur === "function") return cur(...args);
+  return cur ?? path;
+};
+```
+
+---
+
+# 使い方（既存コンポーネントでの差し替え例）
+
+例として `frontend/src/PrizeList.jsx` の文言を差し替える場合、先頭で `t` を読み込み、文字列を `t("...")` に置き換えます。
+
+```diff
+- import React, { useEffect, useState } from "react";
++ import React, { useEffect, useState } from "react";
++ import { t } from "./locale";
+
+- <h1>抽選予定の賞品一覧</h1>
++ <h1>{t("prizes.title")}</h1>
+
+- <p>※ 公開時刻（JST）になると、各賞品のページで結果を確認できます。</p>
++ <p>{t("prizes.note")}</p>
+
+- <p>現在、公開予定の抽選はありません。</p>
++ <p>{t("prizes.empty")}</p>
+
+- <div>公開日: {fmtJst}</div>
++ <div>{t("prizes.publishAt")(fmtJst)}</div>
+
+- <button>参加者ページを開く</button>
++ <button>{t("prizes.openParticipant")}</button>
+
+- <button>QRをPNG保存</button>
++ <button>{t("prizes.saveQrPng")}</button>
+```
+
+同様に、`Participant.jsx`, `Admin.jsx`, `AdminEdit.jsx` などでも `t` を使えば、**文言はすべて `ja.js` の1ファイルで管理**できます。
+
+---
+
+# 進め方の提案
+1) まず **上の2ファイルを新規作成**（`locale/` フォルダごと）。  
+2) その後、画面ごとに `t(...)` へ順次置換。  
+3) 最後に “文言修正リスト”を見ながら微調整（追加のキーが必要なら `ja.js` に追記）。
+
+> 置き換えが必要な既存ファイルを指定いただければ、**そのファイルを“全部置き換え版”**でお渡しします。まずはどの画面からいきますか？（例：`Participant.jsx` と `PrizeList.jsx` から）
+
+---
+
+user:
+frontend/src/locale/ja.js
+frontend/src/locale/index.js
+は作った。
+これ、将来的に多言語対応できそうだね。
+
+でも、まずは機能・運用チェックリストから
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+ナイス！`locale/` までできてるの最高です。  
+では宣言どおり、**機能・運用チェックリスト**に全集中します。  
+（文言はあとで一気にやる前提）
+
+---
+
+# 機能・運用チェックリスト（本番前〜本番当日）
+
+下は **3つのターミナル運用**を前提にしています：
+- ① **backend**（サーバ起動用）
+- ② **frontend**（ローカル動作/ビルド確認用）
+- ③ **command**（API叩き・DB操作用）
+
+## A. ローカル最終確認
+
+### A-1. バックエンド起動（① backendターミナル）
+```bash
+echo "# backend を起動"
+cd ~/Downloads/distribution-lottery-app/backend
+PORT=3001 node index.js
+# 起動ログに [boot] ADMIN_SECRET configured? YES (...) が出ること
+```
+
+### A-2. API 生存＆管理API 認証（③ commandターミナル）
+```bash
+echo "# 管理シークレットを .env から読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"
+
+echo "# 公開API（一覧）: 200 OK 期待"
+curl -sS -i http://localhost:3001/api/prizes
+
+echo "# 管理API: 新規賞品（未使用IDに変更して可）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B9000","name":"本番前リハーサル","result_time_jst":"2025-08-25 12:00"}'
+```
+
+### A-3. 参加者の投入 & 当落確認（③ command）
+```bash
+echo "# 参加者（001=当選, 002=落選）を投入"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+```
+
+### A-4. フロントの目視確認（② frontendターミナル）
+```bash
+echo "# 開発サーバ（必要なら）"
+cd ~/Downloads/distribution-lottery-app/frontend
+npm start
+# ブラウザで http://localhost:3000 を開く
+
+echo "# 管理一覧"
+open http://localhost:3000/admin
+
+echo "# 参加者ページ（B9000）"
+open "http://localhost:3000/p?prizeId=B9000"
+
+echo "# 賞品一覧"
+open http://localhost:3000/prizes
+```
+
+---
+
+## B. Render デプロイ手順（最短）
+
+### B-1. Render（Web Service：Node/Express）
+- **Name**: `distribution-lottery`
+- **Root**: リポジトリ直下
+- **Build Command**  
+  ```
+  cd frontend && npm ci && npm run build && cd ../backend && npm ci
+  ```
+- **Start Command**  
+  ```
+  cd backend && node index.js
+  ```
+- **環境変数（Render ダッシュボード → Environment）**
+  - `PORT` = `10000`（Render 側が注入。未設定でOKの場合も多いが明示を推奨）
+  - `DATABASE_URL` = （Render の Postgres 内部接続URL / External でもOK）  
+    例: `postgresql://...render.com/distribution_lottery_app_db?sslmode=require`
+  - `ADMIN_SECRET` = **backend/.env と同じ値**（必須）
+  - `NODE_ENV` = `production`
+
+> 参考：フロントは `frontend/build` を Express の `static` で配信する構成なので、**Web Service 1つ**でOKです（別に Static Site を作る必要なし）。
+
+### B-2. Render（Postgres）
+- すでに作成済みならそのまま使用  
+- **注意**: **データが空の新DB**に切り替え直した場合は、初期テーブル（prizes, entries）を作るクエリを実行（以前お渡しのDDLと同じ）
+
+```sql
+-- prizes
+CREATE TABLE IF NOT EXISTS prizes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  result_time_jst TEXT NOT NULL,
+  publish_time_utc TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- entries
+CREATE TABLE IF NOT EXISTS entries (
+  id SERIAL PRIMARY KEY,
+  prize_id TEXT NOT NULL REFERENCES prizes(id) ON DELETE CASCADE,
+  entry_number TEXT NOT NULL,
+  password TEXT NOT NULL,
+  is_winner BOOLEAN NOT NULL DEFAULT FALSE,
+  UNIQUE (prize_id, entry_number)
+);
+```
+
+---
+
+## C. 本番オペレーション・チェックリスト（当日）
+
+```bash
+echo "# 1) Render の Web Service: デプロイ完了を確認（/api/prizes が 200）"
+curl -sS -I https://YOUR-RENDER-DOMAIN.onrender.com/api/prizes
+
+echo "# 2) 管理シークレットが効くか（admin-debug）"
+curl -sS -H "x-admin-secret: YOUR_ADMIN_SECRET" https://YOUR-RENDER-DOMAIN.onrender.com/api/admin-debug/env
+
+echo "# 3) 本番用の賞品を作成（ID/日時/名前を本番のものに）"
+curl -sS -X POST https://YOUR-RENDER-DOMAIN.onrender.com/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: YOUR_ADMIN_SECRET" \
+  -d '{"id":"C001","name":"コミケ本番○○賞","result_time_jst":"2025-08-31 16:00"}'
+
+echo "# 4) 参加者CSVの一括投入は /admin GUI から（重複保護ONでOK）"
+open https://YOUR-RENDER-DOMAIN.onrender.com/admin
+
+echo "# 5) QR PNG を事前出力して配布物に貼付"
+# （GUIの「QRコードをPNGで保存」）
+
+echo "# 6) 公開直前リハ：当日1つだけ対象賞品の publish_time_utc を少し未来→公開タイミングに変更"
+# （SQL / 管理GUIの編集から設定）
+
+echo "# 7) 公開後：参加者が各自スマホで /p?prizeId=... から当落確認"
+```
+
+---
+
+## D. 運用の小ワザ（安全＆便利）
+
+- **管理シークレットは必ず Render 環境変数にのみ置く**（Git に入れない）  
+- **CSV は “日付フォルダ” を切って管理**（誤投入を防止）  
+- **QR の PNG** は 300〜600px 四方で出力（印刷想定なら300dpi基準）  
+- **監査ログ**：いまはフックのみ。将来、`audit` テーブル追加で「誰が/いつ/何を変更」まで記録可能  
+- **緊急時**：`/api/prizes` を見て公開予定や公開済みを即確認、`/api/lottery/check` でテストIDの当落を確認
+
+---
+
+必要なら、**Render の環境変数スクショ構成**や、**初期DDLを自動作成する起動時スクリプト**（例：`INIT_DB=1` のときだけ実行）も用意できます。  
+次は「**デプロイ直後の疎通確認を一発でやるスクリプト**」を作るのがオススメですが、進めます？
+
+---
+
+user:
+m-aoki@MacBook-Pro-20240703 backend % echo "# 参加者（001=当選, 002=落選） を投入"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# 参加者（001=当選, 002=落選）を投入
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+# 即公開（1分過去へ）
+UPDATE 1
+# 当選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}# 落選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}%  
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+user:
+A-3は、下記で大丈夫？
+
+m-aoki@MacBook-Pro-20240703 backend % echo "# 参加者（001=当選, 002=落選） を投入"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# 参加者（001=当選, 002=落選）を投入
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+# 即公開（1分過去へ）
+UPDATE 1
+# 当選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}# 落選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}%                                                                        m-aoki@MacBook-Pro-20240703 backend % echo "# 管理一覧"
+open http://localhost:3000/admin
+
+echo "# 参加者ページ（B9000）"
+open "http://localhost:3000/p?prizeId=B9000"
+
+echo "# 賞品一覧"
+open http://localhost:3000/prizes
+# 管理一覧
+# 参加者ページ（B9000）
+# 賞品一覧
+m-aoki@MacBook-Pro-20240703 backend % echo "# 管理一覧"
+open http://localhost:3000/admin
+
+echo "# 参加者ページ（B9000）"
+open "http://localhost:3000/p?prizeId=B9000"
+
+echo "# 賞品一覧"
+open http://localhost:3000/prizes
+# 管理一覧
+# 参加者ページ（B9000）
+# 賞品一覧
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % echo "# 管理一覧"
+open http://localhost:3000/admin
+
+echo "# 参加者ページ（B9000）"
+open "http://localhost:3000/p?prizeId=B9000"
+
+echo "# 賞品一覧"
+open http://localhost:3000/prizes
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % echo "# 参加者（001=当選, 002=落選） を投入"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# 参加者（001=当選, 002=落選）を投入
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+# 即公開（1分過去へ）
+UPDATE 1
+# 当選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}# 落選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}%                                                                        m-aoki@MacBook-Pro-20240703 backend % 
+
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+結論：そのA-3コマンドだとダメです。**/api/entries の POST は管理認証必須**なので、`x-admin-secret` ヘッダを付けて実行してください。貼り付け用の完全版を置いておきます（「コマンド用」ターミナルで実行）。
+
+```bash
+echo "# 0) backend/.env から ADMIN_SECRET を読み込む（値は表示しない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"; echo "# ADMIN 長さ: ${#ADMIN} chars"
+
+echo "# 1) 参加者（001=当選, 002=落選） を投入（管理ヘッダ付き）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 2) 反映確認（一覧）"
+curl -sS http://localhost:3001/api/entries/B9000 | jq . || curl -sS http://localhost:3001/api/entries/B9000
+
+echo "# 3) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 4) 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 5) 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+```
+
+### もしまだ 401 が出る場合
+- バックエンドの起動ターミナルに **`[boot] ADMIN_SECRET configured? YES (length=… )`** が出ているか確認。
+- 管理デバッグでサーバ側が認識している長さを確認：
+  ```bash
+  curl -sS -H "x-admin-secret: $ADMIN" http://localhost:3001/api/admin-debug/env | jq .
+  ```
+  ここで `adminSecretLength` が .env の長さと一致していればOKです。  
+  一致しない場合はバックエンドを再起動してください。
+
+---
+
+user:
+これでOK?
+
+m-aoki@MacBook-Pro-20240703 backend % echo "# 参加者（001=当選, 002=落選） を投入"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# 参加者（001=当選, 002=落選）を投入
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+{"error":"Unauthorized (invalid admin secret)"}
+HTTP 401
+# 即公開（1分過去へ）
+UPDATE 1
+# 当選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}# 落選チェック
+{"result":"エントリーが見つかりません。番号やパスワードを確認してください。"}%                                                                        m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % 
+m-aoki@MacBook-Pro-20240703 backend % >....                                
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 2) 反映確認（一覧）"
+curl -sS http://localhost:3001/api/entries/B9000 | jq . || curl -sS http://localhost:3001/api/entries/B9000
+
+echo "# 3) 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 4) 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 5) 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# 0) backend/.env から ADMIN_SECRET を読み込む（値は表示しない）
+# ADMIN 長さ: 64 chars
+# 1) 参加者（001=当選, 002=落選） を投入（管理ヘッダ付き）
+{"id":8,"prize_id":"B9000","entry_number":"001","is_winner":true}
+HTTP 201
+{"id":9,"prize_id":"B9000","entry_number":"002","is_winner":false}
+HTTP 201
+# 2) 反映確認（一覧）
+[
+  {
+    "id": 8,
+    "prize_id": "B9000",
+    "entry_number": "001",
+    "is_winner": true
+  },
+  {
+    "id": 9,
+    "prize_id": "B9000",
+    "entry_number": "002",
+    "is_winner": false
+  }
+]
+# 3) 即公開（1分過去へ）
+UPDATE 1
+# 4) 当選チェック（001/1111）
+{"result":"🎉 おめでとうございます！「本番前リハーサル」に当選しました！"}# 5) 落選チェック（002/2222）
+{"result":"残念ながら「本番前リハーサル」には当選しませんでした。"}%  
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+はい、**後半の手順（`x-admin-secret` を付けた版）が正解で OK** です。ログも以下の通り想定どおりです。
+
+- 参加者登録：`HTTP 201`（2件とも作成）
+- 即公開：`UPDATE 1`
+- 当選/落選チェック：期待メッセージが返却
+
+一方、**最初の手順（管理ヘッダなし）**は仕様通り `401 Unauthorized` になるので NG です。
+
+最後に短チェック👇  
+- [x] `ADMIN` を backend/.env から読み込んだ  
+- [x] 参加者登録に `-H "x-admin-secret: $ADMIN"` を付けた  
+- [x] 公開時刻を過去に更新して公開済みにした  
+- [x] 当選・落選の確認が通った  
+
+このまま同じ要領で本番用 ID に投入していけば大丈夫です。
+
+---
+
+user:
+一方、**最初の手順（管理ヘッダなし）**は仕様通り 401 Unauthorized になるので NG です。ってどういうこと？
+
+---
+
+system:
+
+
+---
+
+assistant:
+なるほど、ご質問ありがとうございます 🙆  
+
+私が言った「最初の手順（管理ヘッダなし）は仕様通り 401 Unauthorized になるので NG」というのはこういう意味です：
+
+---
+
+### 1. エントリ登録 API は「管理操作」扱い
+- `/api/entries` に対して「新しい参加者を追加する」というのは、管理者だけができる操作です。  
+- なのでバックエンドでは **必ず `x-admin-secret` ヘッダ**が必要になります。  
+
+---
+
+### 2. 管理ヘッダを付けなかった場合
+- 最初に実行したコマンドでは `-H "x-admin-secret: $ADMIN"` を付けていなかったため、  
+  バックエンド側は「認証情報なし＝不正アクセス」と判断。  
+- その結果、`401 Unauthorized` エラーを返した、というのが「仕様通り」です。  
+- つまりこれは **セキュリティの想定通りの動作** なので、失敗（NG）で正しいということです。
+
+---
+
+### 3. 管理ヘッダを付けた後は成功
+- 2回目のコマンドではちゃんと `-H "x-admin-secret: $ADMIN"` を付けたので、サーバーが認証成功。  
+- `201 Created` が返って DB に登録されました。  
+
+---
+
+✅ まとめると  
+- **NG**：管理ヘッダなし（→401 Unauthorized）  
+- **OK**：管理ヘッダあり（→201 Created）  
+
+という整理になります。  
+
+---
+
+質問ですが、運用リハーサル用チェックリストには「管理系 API 呼び出しには必ず `x-admin-secret` を付ける」という注意書きを入れておきますか？
+
+---
+
+user:
+はい
+
+---
+
+system:
+
+
+---
+
+system:
+
+
+---
+
+assistant:
+了解！👍
+
+じゃあ、この流れでいきましょう。**管理ヘッダ付きの投入〜公開〜当落確認**を一発で回せる“貼り付け用スニペット”を置いておきます（コマンド用ターミナルで実行）。
+
+```bash
+echo "# backend/.env から ADMIN を読み込み（値は出さない）"
+cd ~/Downloads/distribution-lottery-app/backend
+ADMIN="$(grep -E '^ADMIN_SECRET=' .env | cut -d= -f2-)"; echo "# ADMIN 長さ: ${#ADMIN}"
+
+echo "# 賞品B9000が無ければ作成（既にあれば 409 でもOK）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/prizes \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"id":"B9000","name":"本番前リハーサル","result_time_jst":"2025-08-25 12:00"}'
+
+echo "# 参加者（001=当選, 002=落選）を投入（管理ヘッダ必須）"
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 反映確認（一覧）"
+curl -sS http://localhost:3001/api/entries/B9000 | jq . || curl -sS http://localhost:3001/api/entries/B9000
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+```
+
+おまけ：頻繁に使うなら **zsh 関数**を `~/.zshrc` に入れておくと楽です。
+
+```bash
+lot-add() {
+  local pid="$1" no="$2" pass="$3" win="$4"
+  local ADMIN="$(grep -E '^ADMIN_SECRET=' ~/Downloads/distribution-lottery-app/backend/.env | cut -d= -f2-)"
+  curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+    -H 'Content-Type: application/json' \
+    -H "x-admin-secret: $ADMIN" \
+    -d "{\"prize_id\":\"${pid}\",\"entry_number\":\"${no}\",\"password\":\"${pass}\",\"is_winner\":${win}}"
+}
+# 使い方例：
+# lot-add B9000 003 3333 true
+# lot-add B9000 004 4444 false
+```
+
+次にやりたいことがあれば、言ってくれれば一気に整えます（本番向けデプロイスクリプト・疎通チェック一発・CSVテンプレ再掲など）。
+
+---
+
+user:
+これでOK?
+m-aoki@MacBook-Pro-20240703 backend % >....                                
+es \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"001","password":"1111","is_winner":true}'
+curl -sS -w "\nHTTP %{http_code}\n" -X POST http://localhost:3001/api/entries \
+  -H 'Content-Type: application/json' \
+  -H "x-admin-secret: $ADMIN" \
+  -d '{"prize_id":"B9000","entry_number":"002","password":"2222","is_winner":false}'
+
+echo "# 反映確認（一覧）"
+curl -sS http://localhost:3001/api/entries/B9000 | jq . || curl -sS http://localhost:3001/api/entries/B9000
+
+echo "# 即公開（1分過去へ）"
+DBURL='postgresql://distribution_lottery_app_db_user:WHUQgWKrlJ7auiY0SRAGsfHJLbNoUFp0@dpg-d2hst275r7bs73epm5r0-a.oregon-postgres.render.com/distribution_lottery_app_db'
+psql "$DBURL" -c "UPDATE prizes SET publish_time_utc = NOW() - interval '1 minute', updated_at=NOW() WHERE id='B9000';"
+
+echo "# 当選チェック（001/1111）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"001","password":"1111"}'
+
+echo "# 落選チェック（002/2222）"
+curl -sS -X POST http://localhost:3001/api/lottery/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prizeId":"B9000","entryNumber":"002","password":"2222"}'
+# backend/.env から ADMIN を読み込み（値は出さない）
+# ADMIN 長さ: 64
+# 賞品B9000が無ければ作成（既にあれば 409 でもOK）
+{"error":"Duplicate id"}
+HTTP 409
+# 参加者（001=当選, 002=落選）を投入（管理ヘッダ必須）
+{"error":"Entry already exists for this prize_id and entry_number"}
+HTTP 409
+{"error":"Entry already exists for this prize_id and entry_number"}
+HTTP 409
+# 反映確認（一覧）
+[
+  {
+    "id": 8,
