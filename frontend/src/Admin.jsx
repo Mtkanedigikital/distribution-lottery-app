@@ -239,8 +239,8 @@ export default function Admin() {
   const onCsvSelected = async (file) => {
     setCsvResult(null);
     if (!csvPrizeId) {
-      alert("先に対象の賞品IDを選択してください。");
-      return;
+      // 先にCSVを選んだ場合でも読み込みは許可し、後でIDを選べばボタンが押せるようにする
+      showToast("先に賞品IDを選択してください（CSVは読み込み済みです）", "info");
     }
     if (!file) {
       setCsvFileName("");
