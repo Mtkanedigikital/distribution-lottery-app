@@ -31,3 +31,6 @@ frontend/build/
 
 # Internal docs (非公開メモ)
 internal_docs/
+# 例外: archive は追跡対象
+!internal_docs/archive/
+!internal_docs/archive/**
